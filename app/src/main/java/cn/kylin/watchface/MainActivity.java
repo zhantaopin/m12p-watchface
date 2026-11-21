@@ -1,7 +1,7 @@
 package cn.kylin.watchface;
 
 import android.app.Activity;
-import android.app.WallpaperManager;
+import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Color;
@@ -87,7 +87,6 @@ public class MainActivity extends Activity {
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         p = getSharedPreferences("wf", MODE_PRIVATE);
 
-        BgReceiver.engineRedraw = WatchfaceService::requestRedraw;
         BgReceiver.uiRefresh = () -> ui.post(this::refreshAll);
 
         buildUi();
@@ -108,7 +107,6 @@ public class MainActivity extends Activity {
         super.onDestroy();
         ui.removeCallbacks(tick);
         BgReceiver.uiRefresh = null;
-        BgReceiver.engineRedraw = null;
     }
 
     private void applyImmersive() {
@@ -202,13 +200,10 @@ public class MainActivity extends Activity {
         tabSniff.setOnClickListener(v -> show(2));
         box.addView(tabs);
 
-        // 预览页：壁纸尝试 + 提示
+        // 预览页：桌面模式 + 背景图 + 提示
         LinearLayout pv = new LinearLayout(this);
         pv.setOrientation(LinearLayout.VERTICAL);
         pv.setPadding(dp(8), dp(8), dp(8), 0);
-        Button setWp = btn("设为壁纸（自动走时）");
-        setWp.setOnClickListener(v -> setWallpaper());
-        pv.addView(setWp, wide());
         Button setHome = btn("设为主屏幕（桌面模式）");
         setHome.setOnClickListener(v -> setAsHome());
         pv.addView(setHome, wide());
@@ -218,8 +213,8 @@ public class MainActivity extends Activity {
         Button resetBg = btn("恢复纯黑背景");
         resetBg.setOnClickListener(v -> resetBg());
         pv.addView(resetBg, wide());
-        pv.addView(hint("桌面模式：按 Home 键即回表盘，图标不遮挡；壁纸模式会被应用图标覆盖"));
-        previewPage = pv;
+        pv.addView(hint("桌面模式：按 Home 键即回表盘；表盘血糖旁的眼睛图标可隐藏/显示血糖"));
+        previewPage = scrollWrap(pv);
 
         // 设置页
         LinearLayout st = new LinearLayout(this);
@@ -277,11 +272,7 @@ public class MainActivity extends Activity {
         pickDock.setOnClickListener(v -> openPicker(MODE_DOCK));
         st.addView(pickDock, wide());
 
-        LinearLayout spacer = new LinearLayout(this);
-        spacer.setOrientation(LinearLayout.VERTICAL);
-        st.addView(spacer, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
-        settingPage = st;
+        settingPage = scrollWrap(st);
 
         // 嗅探页
         LinearLayout sn = new LinearLayout(this);
@@ -293,7 +284,7 @@ public class MainActivity extends Activity {
         sniffText.setPadding(dp(6), dp(8), dp(6), dp(8));
         sn.addView(sniffText, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        sniffPage = sn;
+        sniffPage = scrollWrap(sn);
 
         box.addView(previewPage, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
@@ -344,19 +335,6 @@ public class MainActivity extends Activity {
         if (v > 5f) v = 5f;
         p.edit().putFloat("offset", v).apply();
         refreshAll();
-    }
-
-    /** v4：直接写入系统静态壁纸并启动每分钟推送服务，无需系统壁纸设置页 */
-    private void setWallpaper() {
-        try {
-            WallpaperPushService.pushOnce(this);
-            startForegroundService(new Intent(this, WallpaperPushService.class));
-            Toast.makeText(this, "已设为系统壁纸，主屏即表盘（每分钟走时）",
-                    Toast.LENGTH_LONG).show();
-        } catch (Throwable t) {
-            Toast.makeText(this, "设置壁纸失败：" + t.getMessage()
-                    + "，可继续使用全屏时钟模式", Toast.LENGTH_LONG).show();
-        }
     }
 
     /** 跳转系统"主屏幕应用"设置页；无此页面时提示按 Home 键选择 */
@@ -554,13 +532,13 @@ public class MainActivity extends Activity {
             cell.setPadding(dp(4), dp(8), dp(4), dp(8));
             ImageView iv = new ImageView(this);
             iv.setImageDrawable(ai.icon);
-            LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(dp(36), dp(36));
+            LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(dp(52), dp(52));
             ip.setMargins(0, 0, 0, dp(4));
             cell.addView(iv, ip);
             TextView tv = new TextView(this);
             tv.setText(ai.label);
             tv.setTextColor(Color.rgb(205, 205, 205));
-            tv.setTextSize(14);
+            tv.setTextSize(15);
             tv.setGravity(Gravity.CENTER);
             tv.setMaxLines(2);
             tv.setEllipsize(android.text.TextUtils.TruncateAt.END);
@@ -576,6 +554,10 @@ public class MainActivity extends Activity {
                 } catch (Throwable ignored) {
                 }
             });
+            cell.setOnLongClickListener(v -> {
+                showAppMenu(ai);
+                return true;
+            });
             GridLayout.LayoutParams cp = new GridLayout.LayoutParams(
                     GridLayout.spec(GridLayout.UNDEFINED, 1f),
                     GridLayout.spec(GridLayout.UNDEFINED, 1f));
@@ -590,6 +572,74 @@ public class MainActivity extends Activity {
 
     private void closeDrawer() {
         drawerBox.setVisibility(View.GONE);
+    }
+
+    // ---------------- 长按应用菜单 ----------------
+
+    /** 长按图标：固定到快捷入口 / 应用信息 / 卸载 */
+    private void showAppMenu(AppInfo ai) {
+        if (SYS_SETTINGS.equals(ai.pkg)) {
+            return;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle(ai.label)
+                .setItems(new String[]{"固定到快捷入口", "应用信息", "卸载"},
+                        (d, w) -> {
+                            if (w == 0) {
+                                pinToDock(ai.pkg);
+                            } else if (w == 1) {
+                                openAppInfo(ai.pkg);
+                            } else {
+                                openUninstall(ai.pkg);
+                            }
+                        })
+                .show();
+    }
+
+    /** 加入底部快捷行（沿用默认项初始化，上限 4 个） */
+    private void pinToDock(String pkg) {
+        List<String> list = new ArrayList<>();
+        String saved = p.getString("wf_dock_list", "");
+        if (saved.isEmpty()) {
+            for (String[] e : dockEntries()) {
+                if (!SYS_SETTINGS.equals(e[1]) && !list.contains(e[1])) {
+                    list.add(e[1]);
+                }
+            }
+        } else {
+            Collections.addAll(list, saved.split("\\|"));
+        }
+        if (list.contains(pkg)) {
+            Toast.makeText(this, "已在快捷入口", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (list.size() >= 4) {
+            Toast.makeText(this, "快捷入口最多 4 个", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        list.add(pkg);
+        p.edit().putString("wf_dock_list", String.join("|", list)).apply();
+        rebuildDock();
+        Toast.makeText(this, "已固定到快捷入口", Toast.LENGTH_SHORT).show();
+    }
+
+    private void openAppInfo(String pkg) {
+        try {
+            startActivity(new Intent(android.provider.Settings
+                    .ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:" + pkg)));
+        } catch (Throwable t) {
+            Toast.makeText(this, "无法打开应用信息", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void openUninstall(String pkg) {
+        try {
+            startActivity(new Intent(Intent.ACTION_DELETE,
+                    Uri.parse("package:" + pkg)));
+        } catch (Throwable t) {
+            Toast.makeText(this, "无法启动卸载", Toast.LENGTH_SHORT).show();
+        }
     }
 
     // ---------------- 应用选择器 ----------------
@@ -741,10 +791,6 @@ public class MainActivity extends Activity {
         p.edit().putString("wf_bg", new File(getFilesDir(), "bg.png").getAbsolutePath()).apply();
         FaceDrawer.invalidateBg();
         clockView.invalidate();
-        try {
-            WallpaperPushService.pushOnce(this);
-        } catch (Throwable ignored) {
-        }
         Toast.makeText(this, "背景已更换", Toast.LENGTH_SHORT).show();
     }
 
@@ -753,11 +799,15 @@ public class MainActivity extends Activity {
         p.edit().remove("wf_bg").apply();
         FaceDrawer.invalidateBg();
         clockView.invalidate();
-        try {
-            WallpaperPushService.pushOnce(this);
-        } catch (Throwable ignored) {
-        }
         Toast.makeText(this, "已恢复纯黑背景", Toast.LENGTH_SHORT).show();
+    }
+
+    /** 页面内容套 ScrollView，竖向可滑动（设置/嗅探内容超出屏幕） */
+    private ScrollView scrollWrap(LinearLayout content) {
+        ScrollView sv = new ScrollView(this);
+        sv.addView(content, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        return sv;
     }
 
     // ---------------- 控件工具 ----------------
@@ -774,6 +824,16 @@ public class MainActivity extends Activity {
                 @Override
                 public boolean onDown(MotionEvent e) {
                     return true;
+                }
+
+                /** 点眼睛图标隐藏/显示血糖 */
+                @Override
+                public boolean onSingleTapConfirmed(MotionEvent e) {
+                    if (FaceDrawer.eyeRect().contains(e.getX(), e.getY())) {
+                        toggleBgHide();
+                        return true;
+                    }
+                    return false;
                 }
 
                 @Override
@@ -805,6 +865,14 @@ public class MainActivity extends Activity {
                 return true;
             }
             return super.onTouchEvent(e);
+        }
+    }
+
+    /** 切换血糖隐私隐藏状态（眼睛图标） */
+    private void toggleBgHide() {
+        p.edit().putBoolean("wf_bg_hide", !p.getBoolean("wf_bg_hide", false)).apply();
+        if (clockView != null) {
+            clockView.invalidate();
         }
     }
 

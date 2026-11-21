@@ -9,6 +9,7 @@ import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.os.BatteryManager;
 
@@ -54,6 +55,13 @@ public final class FaceDrawer {
     private static Bitmap sBg;
     private static String sBgKey;
 
+    /** 眼睛图标命中区域（每次 draw 更新，供点击隐藏/显示血糖） */
+    private static final RectF sEyeRect = new RectF();
+
+    public static RectF eyeRect() {
+        return sEyeRect;
+    }
+
     /** 换背景后调用，强制下次重绘重新解码 */
     public static void invalidateBg() {
         sBg = null;
@@ -80,25 +88,18 @@ public final class FaceDrawer {
         return sBg;
     }
 
-    public static void draw(Canvas c, Context ctx) {
-        draw(c, ctx, false);
-    }
-
-    /**
-     * @param reserveBottom true 时底部预留快捷启动行空间（app/桌面模式），
-     *                      壁纸模式仍画满整屏
-     */
     public static void draw(Canvas c, Context ctx, boolean reserveBottom) {
         SharedPreferences p = ctx.getSharedPreferences("wf", Context.MODE_PRIVATE);
         int w = c.getWidth(), h = c.getHeight();
         float unit = Math.min(w, h) / 448f; // 缩放基准
+        boolean hideBg = p.getBoolean("wf_bg_hide", false); // 血糖隐私隐藏
 
         Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
-        // 背景：自定义图（居中裁剪铺满）或纯黑
+        // 背景：自定义图（完整显示整张图，不足处留黑边）或纯黑
         Bitmap bg = background(ctx, w, h);
         if (bg != null) {
-            float s = Math.max(w / (float) bg.getWidth(), h / (float) bg.getHeight());
+            float s = Math.min(w / (float) bg.getWidth(), h / (float) bg.getHeight());
             paint.setColor(Color.BLACK);
             c.drawRect(0, 0, w, h, paint);
             paint.setFilterBitmap(true);
@@ -135,59 +136,62 @@ public final class FaceDrawer {
             paint.setTextSize(28 * unit);
             c.drawText("未收到血糖", w / 2f, bgY, paint);
         } else {
-            double mgdl = p.getFloat("bg_mgdl", 0);
-            boolean mmol = "mmol".equals(p.getString("unit", "mmol"));
-            float offsetMmol = p.getFloat("offset", 0f);
-            boolean fromAaps = "aaps".equals(p.getString("bg_src", "aaps"));
-            // AAPS 源已含偏移；欧态源叠加用户偏移
-            double effMgdl = fromAaps ? mgdl : mgdl + offsetMmol * 18.0;
-            double shown = mmol ? effMgdl / 18.0 : effMgdl;
+            drawEye(c, w, bgY, unit, hideBg);
+            if (!hideBg) {
+                double mgdl = p.getFloat("bg_mgdl", 0);
+                boolean mmol = "mmol".equals(p.getString("unit", "mmol"));
+                float offsetMmol = p.getFloat("offset", 0f);
+                boolean fromAaps = "aaps".equals(p.getString("bg_src", "aaps"));
+                // AAPS 源已含偏移；欧态源叠加用户偏移
+                double effMgdl = fromAaps ? mgdl : mgdl + offsetMmol * 18.0;
+                double shown = mmol ? effMgdl / 18.0 : effMgdl;
 
-            double mmolVal = effMgdl / 18.0;
-            int color = (mmolVal < 3.9 || mmolVal > 13.9) ? RED : GREEN;
+                double mmolVal = effMgdl / 18.0;
+                int color = (mmolVal < 3.9 || mmolVal > 13.9) ? RED : GREEN;
 
-            String arrow = ARROWS.containsKey(p.getString("bg_arrow", "NONE"))
-                    ? ARROWS.get(p.getString("bg_arrow", "NONE")) : "?";
+                String arrow = ARROWS.containsKey(p.getString("bg_arrow", "NONE"))
+                        ? ARROWS.get(p.getString("bg_arrow", "NONE")) : "?";
 
-            paint.setColor(color);
-            paint.setTypeface(Typeface.DEFAULT_BOLD);
-            paint.setTextSize(84 * unit);
-            String valText = (mmol ? String.format(Locale.US, "%.1f", shown)
-                    : String.valueOf((int) Math.round(shown))) + " " + arrow;
-            c.drawText(valText, w / 2f, bgY, paint);
+                paint.setColor(color);
+                paint.setTypeface(Typeface.DEFAULT_BOLD);
+                paint.setTextSize(84 * unit);
+                String valText = (mmol ? String.format(Locale.US, "%.1f", shown)
+                        : String.valueOf((int) Math.round(shown))) + " " + arrow;
+                c.drawText(valText, w / 2f, bgY, paint);
 
-            // 时效 + delta
-            long ageMin = (System.currentTimeMillis() - p.getLong("bg_time", 0)) / 60000L;
-            String line2;
-            if (p.getBoolean("bg_has_delta", false)) {
-                double deltaMgdl = p.getFloat("bg_delta", 0) + (fromAaps ? 0 : offsetMmol * 18);
-                String d = mmol ? String.format(Locale.US, "%+.1f", deltaMgdl / 18.0)
-                        : String.format(Locale.US, "%+.0f", deltaMgdl);
-                line2 = d + "  " + ageMin + "分钟前";
-            } else {
-                line2 = ageMin + "分钟前";
-            }
-            paint.setColor(GRAY);
-            paint.setTypeface(Typeface.DEFAULT);
-            paint.setTextSize(24 * unit);
-            c.drawText(line2, w / 2f, bgY + 38 * unit, paint);
-
-            // IOB/COB
-            float iob = p.getFloat("iob", -1);
-            float cob = p.getFloat("cob", -1);
-            if (iob >= 0 || cob >= 0) {
-                StringBuilder sb = new StringBuilder();
-                if (iob >= 0) {
-                    sb.append("IOB ").append(String.format(Locale.US, "%.1fU", iob));
+                // 时效 + delta
+                long ageMin = (System.currentTimeMillis() - p.getLong("bg_time", 0)) / 60000L;
+                String line2;
+                if (p.getBoolean("bg_has_delta", false)) {
+                    double deltaMgdl = p.getFloat("bg_delta", 0) + (fromAaps ? 0 : offsetMmol * 18);
+                    String d = mmol ? String.format(Locale.US, "%+.1f", deltaMgdl / 18.0)
+                            : String.format(Locale.US, "%+.0f", deltaMgdl);
+                    line2 = d + "  " + ageMin + "分钟前";
+                } else {
+                    line2 = ageMin + "分钟前";
                 }
-                if (cob >= 0) {
-                    if (sb.length() > 0) {
-                        sb.append("  ");
-                    }
-                    sb.append("COB ").append(String.format(Locale.US, "%.0fg", cob));
-                }
+                paint.setColor(GRAY);
+                paint.setTypeface(Typeface.DEFAULT);
                 paint.setTextSize(24 * unit);
-                c.drawText(sb.toString(), w / 2f, bgY + 68 * unit, paint);
+                c.drawText(line2, w / 2f, bgY + 38 * unit, paint);
+
+                // IOB/COB
+                float iob = p.getFloat("iob", -1);
+                float cob = p.getFloat("cob", -1);
+                if (iob >= 0 || cob >= 0) {
+                    StringBuilder sb = new StringBuilder();
+                    if (iob >= 0) {
+                        sb.append("IOB ").append(String.format(Locale.US, "%.1fU", iob));
+                    }
+                    if (cob >= 0) {
+                        if (sb.length() > 0) {
+                            sb.append("  ");
+                        }
+                        sb.append("COB ").append(String.format(Locale.US, "%.0fg", cob));
+                    }
+                    paint.setTextSize(24 * unit);
+                    c.drawText(sb.toString(), w / 2f, bgY + 68 * unit, paint);
+                }
             }
         }
 
@@ -202,6 +206,25 @@ public final class FaceDrawer {
         // ---- 数据源 ----
         paint.setTextAlign(Paint.Align.RIGHT);
         c.drawText(p.getString("bg_src", "aaps"), w - 16 * unit, footY, paint);
+    }
+
+    /** 眼睛图标：血糖块右上角，点击隐藏/显示血糖（闭眼态加斜线） */
+    private static void drawEye(Canvas c, int w, float bgY, float unit, boolean hidden) {
+        float ew = 40 * unit, eh = 28 * unit;
+        sEyeRect.set(w - 14 * unit - ew, bgY - 54 * unit,
+                w - 14 * unit, bgY - 54 * unit + eh);
+        Paint ep = new Paint(Paint.ANTI_ALIAS_FLAG);
+        ep.setColor(hidden ? GRAY : Color.rgb(200, 200, 200));
+        ep.setStyle(Paint.Style.STROKE);
+        ep.setStrokeWidth(3 * unit);
+        c.drawOval(sEyeRect, ep);
+        ep.setStyle(Paint.Style.FILL);
+        c.drawCircle(sEyeRect.centerX(), sEyeRect.centerY(), 5 * unit, ep);
+        if (hidden) {
+            ep.setStyle(Paint.Style.STROKE);
+            c.drawLine(sEyeRect.left - 2 * unit, sEyeRect.bottom + 2 * unit,
+                    sEyeRect.right + 2 * unit, sEyeRect.top - 2 * unit, ep);
+        }
     }
 
     private static int battery(Context ctx) {

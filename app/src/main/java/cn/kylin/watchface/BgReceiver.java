@@ -18,9 +18,7 @@ import org.json.JSONObject;
  */
 public class BgReceiver extends BroadcastReceiver {
 
-    /** 服务/界面注册的重绘回调，同一进程内静态传递 */
-    public static Runnable engineRedraw;
-    public static Runnable wallpaperPush;
+    /** 界面注册的刷新回调，同一进程内静态传递 */
     public static Runnable uiRefresh;
 
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
@@ -44,12 +42,6 @@ public class BgReceiver extends BroadcastReceiver {
         }
         ed.apply();
         MAIN.post(() -> {
-            if (engineRedraw != null) {
-                engineRedraw.run();
-            }
-            if (wallpaperPush != null) {
-                wallpaperPush.run();
-            }
             if (uiRefresh != null) {
                 uiRefresh.run();
             }
