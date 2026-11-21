@@ -12,6 +12,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.Gravity;
+import android.view.GestureDetector;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
@@ -47,7 +48,7 @@ public class MainActivity extends Activity {
     private final Handler ui = new Handler(Looper.getMainLooper());
     private SharedPreferences p;
     private boolean clockMode = true;
-    private float touchX, touchY; // 手势起点（表盘左滑/抽屉右滑共用）
+    private int curPage = 0; // 编辑界面当前页：0 预览 1 设置 2 嗅探
 
     private ClockView clockView;
     private FrameLayout rootLayout;
@@ -64,10 +65,10 @@ public class MainActivity extends Activity {
     private View previewPage, settingPage, sniffPage;
 
     private static final int REQ_PICK_IMAGE = 42;
+    private static final String SYS_SETTINGS = "sys:settings";
     private static final int MODE_DRAWER = 0;
     private static final int MODE_DOCK = 1;
-    private static final String SYS_SETTINGS = "sys:settings";
-    private static final int[] FONT_LEVELS = {12, 14, 16}; // 抽屉字体三档 sp
+    private static final float[] UI_FONT_LEVELS = {1.0f, 1.2f, 1.4f}; // 界面字号三档
 
     /** 每分钟走时 */
     private final Runnable tick = new Runnable() {
@@ -150,10 +151,11 @@ public class MainActivity extends Activity {
         rootLayout.addView(pickerBox, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        // 编辑界面（预览/设置/嗅探）
+        // 编辑界面（预览/设置/嗅探），桌面模式默认隐藏——按 Home 直接进表盘
         mainBox = buildMainBox();
         rootLayout.addView(mainBox, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        mainBox.setVisibility(clockMode ? View.GONE : View.VISIBLE);
 
         // 右上角菜单按钮，始终可见
         Button menu = btn(clockMode ? "≡" : "×");
@@ -258,18 +260,12 @@ public class MainActivity extends Activity {
 
         st.addView(hint("AAPS 源数值已含固定偏移，此项保持 0 即与 AAPS 显示一致"));
 
-        st.addView(title("应用抽屉（表盘左滑呼出）"));
-        fontValue = btn("抽屉字体：中");
+        st.addView(title("界面字号（预览/设置/嗅探）"));
+        fontValue = btn(uiFontLabel());
         fontValue.setOnClickListener(v -> {
-            int cur = fontSp(), idx = 0;
-            for (int i = 0; i < FONT_LEVELS.length; i++) {
-                if (FONT_LEVELS[i] == cur) {
-                    idx = i;
-                }
-            }
-            p.edit().putInt("wf_drawer_font",
-                    FONT_LEVELS[(idx + 1) % FONT_LEVELS.length]).apply();
-            refreshAll();
+            p.edit().putInt("wf_ui_font_idx",
+                    (uiFontIdx() + 1) % UI_FONT_LEVELS.length).apply();
+            rebuildUi();
         });
         st.addView(fontValue, wide());
         Button pickDrawer = btn("选择应用（白名单，空=全部）");
@@ -292,7 +288,7 @@ public class MainActivity extends Activity {
         sn.setOrientation(LinearLayout.VERTICAL);
         sniffText = new TextView(this);
         sniffText.setTextColor(Color.rgb(220, 220, 220));
-        sniffText.setTextSize(11);
+        sniffText.setTextSize(11 * uiFont());
         sniffText.setTypeface(Typeface.MONOSPACE);
         sniffText.setPadding(dp(6), dp(8), dp(6), dp(8));
         sn.addView(sniffText, new LinearLayout.LayoutParams(
@@ -309,9 +305,20 @@ public class MainActivity extends Activity {
     }
 
     private void show(int idx) {
+        curPage = idx;
         previewPage.setVisibility(idx == 0 ? View.VISIBLE : View.GONE);
         settingPage.setVisibility(idx == 1 ? View.VISIBLE : View.GONE);
         sniffPage.setVisibility(idx == 2 ? View.VISIBLE : View.GONE);
+        refreshAll();
+    }
+
+    /** 界面字号等全局 UI 参数变化后重建整套界面（保持桌面/编辑状态与当前页） */
+    private void rebuildUi() {
+        rootLayout.removeAllViews();
+        buildUi();
+        if (!clockMode) {
+            show(curPage);
+        }
         refreshAll();
     }
 
@@ -321,7 +328,7 @@ public class MainActivity extends Activity {
         srcValue.setText(aaps ? "AAPS" : "欧态");
         unitValue.setText(mmol ? "mmol/L" : "mg/dL");
         offsetValue.setText(String.format(java.util.Locale.US, "%.2f", p.getFloat("offset", 0f)));
-        fontValue.setText(sizeLabel(fontSp()));
+        fontValue.setText(uiFontLabel());
         String sniff = p.getString("sniff", null);
         sniffText.setText(sniff == null
                 ? "尚未收到广播\n\n检查：1) AAPS 配置启用 Tizen 同步插件\n2) 或欧态 app 是否在发数据\n收到下一次血糖读数后此页出现原文"
@@ -489,17 +496,30 @@ public class MainActivity extends Activity {
     private ScrollView buildDrawer() {
         ScrollView sv = new ScrollView(this);
         sv.setBackgroundColor(Color.argb(248, 10, 10, 10));
+        GestureDetector gd = new GestureDetector(this,
+                new GestureDetector.SimpleOnGestureListener() {
+                    @Override
+                    public boolean onDown(MotionEvent e) {
+                        return true;
+                    }
+
+                    @Override
+                    public boolean onFling(MotionEvent e1, MotionEvent e2,
+                                           float vx, float vy) {
+                        if (e1 == null || e2 == null) {
+                            return false;
+                        }
+                        float dx = e2.getX() - e1.getX(), dy = e2.getY() - e1.getY();
+                        if (Math.abs(dx) > dp(60) && Math.abs(dx) > Math.abs(dy)
+                                && Math.abs(vx) > 400) {
+                            closeDrawer();
+                            return true;
+                        }
+                        return false;
+                    }
+                });
         sv.setOnTouchListener((v, e) -> {
-            if (e.getAction() == MotionEvent.ACTION_DOWN) {
-                touchX = e.getX();
-                touchY = e.getY();
-            } else if (e.getAction() == MotionEvent.ACTION_UP) {
-                float dx = e.getX() - touchX, dy = e.getY() - touchY;
-                if (dx > dp(60) && Math.abs(dx) > Math.abs(dy)) {
-                    closeDrawer();
-                    return true;
-                }
-            }
+            gd.onTouchEvent(e);
             return false;
         });
         return sv;
@@ -510,16 +530,23 @@ public class MainActivity extends Activity {
         LinearLayout wrap = new LinearLayout(this);
         wrap.setOrientation(LinearLayout.VERTICAL);
         wrap.setPadding(dp(4), dp(44), dp(4), dp(48));
+        LinearLayout headRow = new LinearLayout(this);
+        headRow.setOrientation(LinearLayout.HORIZONTAL);
+        headRow.setGravity(Gravity.CENTER_VERTICAL);
         TextView head = new TextView(this);
-        head.setText("全部应用（右滑返回）");
+        head.setText("全部应用（左右滑返回）");
         head.setTextColor(Color.rgb(130, 130, 130));
-        head.setTextSize(12);
-        head.setGravity(Gravity.CENTER);
-        wrap.addView(head, wide());
+        head.setTextSize(13);
+        headRow.addView(head, new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        Button close = btn("×");
+        close.setOnClickListener(v -> closeDrawer());
+        headRow.addView(close, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        wrap.addView(headRow, wide());
 
         GridLayout grid = new GridLayout(this);
         grid.setColumnCount(3);
-        int font = fontSp();
         for (AppInfo ai : loadApps()) {
             LinearLayout cell = new LinearLayout(this);
             cell.setOrientation(LinearLayout.VERTICAL);
@@ -533,7 +560,7 @@ public class MainActivity extends Activity {
             TextView tv = new TextView(this);
             tv.setText(ai.label);
             tv.setTextColor(Color.rgb(205, 205, 205));
-            tv.setTextSize(font);
+            tv.setTextSize(14);
             tv.setGravity(Gravity.CENTER);
             tv.setMaxLines(2);
             tv.setEllipsize(android.text.TextUtils.TruncateAt.END);
@@ -574,7 +601,7 @@ public class MainActivity extends Activity {
         box.setPadding(dp(8), dp(44), dp(8), dp(8));
         pickerTitle = new TextView(this);
         pickerTitle.setTextColor(Color.WHITE);
-        pickerTitle.setTextSize(15);
+        pickerTitle.setTextSize(15 * uiFont());
         pickerTitle.setPadding(0, 0, 0, dp(6));
         box.addView(pickerTitle);
         ScrollView sv = new ScrollView(this);
@@ -633,7 +660,7 @@ public class MainActivity extends Activity {
         TextView name = new TextView(this);
         name.setText(label);
         name.setTextColor(Color.rgb(210, 210, 210));
-        name.setTextSize(13);
+        name.setTextSize(13 * uiFont());
         name.setPadding(dp(6), dp(8), dp(4), dp(8));
         CheckBox cb = new CheckBox(this);
         cb.setChecked(pickedPkgs.contains(pkg));
@@ -737,8 +764,33 @@ public class MainActivity extends Activity {
 
     private class ClockView extends View {
 
+        private final GestureDetector gd;
+
         ClockView(Activity a) {
             super(a);
+            // 必须可点击：否则 DOWN 返回 false 后系统不再派发后续触摸事件，手势失效
+            setClickable(true);
+            gd = new GestureDetector(a, new GestureDetector.SimpleOnGestureListener() {
+                @Override
+                public boolean onDown(MotionEvent e) {
+                    return true;
+                }
+
+                @Override
+                public boolean onFling(MotionEvent e1, MotionEvent e2,
+                                       float vx, float vy) {
+                    if (e1 == null || e2 == null) {
+                        return false;
+                    }
+                    float dx = e2.getX() - e1.getX(), dy = e2.getY() - e1.getY();
+                    if (Math.abs(dx) > dp(60) && Math.abs(dx) > Math.abs(dy)
+                            && Math.abs(vx) > 400) {
+                        openDrawer();
+                        return true;
+                    }
+                    return false;
+                }
+            });
         }
 
         @Override
@@ -746,18 +798,11 @@ public class MainActivity extends Activity {
             FaceDrawer.draw(canvas, getContext(), true);
         }
 
-        /** 表盘左滑呼出应用抽屉 */
+        /** 表盘左右滑动呼出应用抽屉 */
         @Override
         public boolean onTouchEvent(MotionEvent e) {
-            if (e.getAction() == MotionEvent.ACTION_DOWN) {
-                touchX = e.getX();
-                touchY = e.getY();
-            } else if (e.getAction() == MotionEvent.ACTION_UP) {
-                float dx = e.getX() - touchX, dy = e.getY() - touchY;
-                if (dx < -dp(60) && Math.abs(dx) > Math.abs(dy)) {
-                    openDrawer();
-                    return true;
-                }
+            if (gd.onTouchEvent(e)) {
+                return true;
             }
             return super.onTouchEvent(e);
         }
@@ -766,7 +811,7 @@ public class MainActivity extends Activity {
     private Button btn(String text) {
         Button b = new Button(this);
         b.setText(text);
-        b.setTextSize(13);
+        b.setTextSize(13 * uiFont());
         b.setAllCaps(false);
         b.setMinHeight(0);
         b.setMinimumHeight(0);
@@ -778,7 +823,7 @@ public class MainActivity extends Activity {
         TextView t = new TextView(this);
         t.setText(text);
         t.setTextColor(Color.GRAY);
-        t.setTextSize(12);
+        t.setTextSize(12 * uiFont());
         t.setPadding(0, dp(10), 0, dp(2));
         return t;
     }
@@ -787,7 +832,7 @@ public class MainActivity extends Activity {
         TextView t = new TextView(this);
         t.setText(text);
         t.setTextColor(Color.rgb(120, 120, 120));
-        t.setTextSize(10);
+        t.setTextSize(10 * uiFont());
         t.setPadding(0, dp(4), 0, 0);
         return t;
     }
@@ -801,12 +846,17 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
     }
 
-    private int fontSp() {
-        return p.getInt("wf_drawer_font", 14);
+    private int uiFontIdx() {
+        return p.getInt("wf_ui_font_idx", 0);
     }
 
-    private String sizeLabel(int sp) {
-        return sp == 12 ? "抽屉字体：小" : sp == 14 ? "抽屉字体：中" : "抽屉字体：大";
+    private float uiFont() {
+        return UI_FONT_LEVELS[Math.min(uiFontIdx(), UI_FONT_LEVELS.length - 1)];
+    }
+
+    private String uiFontLabel() {
+        int i = uiFontIdx();
+        return i == 0 ? "界面字号：标准" : i == 1 ? "界面字号：大" : "界面字号：特大";
     }
 
     private int dp(int v) {
