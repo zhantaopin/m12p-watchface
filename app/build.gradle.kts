@@ -10,8 +10,8 @@ android {
         applicationId = "cn.kylin.watchface"
         minSdk = 27
         targetSdk = 27
-        versionCode = 6
-        versionName = "1.5"
+        versionCode = 7
+        versionName = "1.6"
     }
 
     buildTypes {

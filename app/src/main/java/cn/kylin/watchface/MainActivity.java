@@ -213,6 +213,14 @@ public class MainActivity extends Activity {
         Button resetBg = btn("恢复纯黑背景");
         resetBg.setOnClickListener(v -> resetBg());
         pv.addView(resetBg, wide());
+        Button bgMode = btn(bgModeLabel());
+        bgMode.setOnClickListener(v -> {
+            boolean cover = "cover".equals(p.getString("wf_bg_mode", "cover"));
+            p.edit().putString("wf_bg_mode", cover ? "contain" : "cover").apply();
+            bgMode.setText(bgModeLabel());
+            clockView.invalidate();
+        });
+        pv.addView(bgMode, wide());
         pv.addView(hint("桌面模式：按 Home 键即回表盘；表盘血糖旁的眼睛图标可隐藏/显示血糖"));
         previewPage = scrollWrap(pv);
 
@@ -446,7 +454,7 @@ public class MainActivity extends Activity {
     }
 
     /** 可启动应用列表：排除自身，应用白名单过滤，按中文名排序 */
-    private List<AppInfo> loadApps() {
+    private List<AppInfo> loadApps(boolean applyWhitelist) {
         List<AppInfo> out = new ArrayList<>();
         android.content.pm.PackageManager pm = getPackageManager();
         Intent q = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER);
@@ -456,7 +464,7 @@ public class MainActivity extends Activity {
             if (pk.equals(getPackageName())) {
                 continue;
             }
-            if (white != null && !white.isEmpty() && !white.contains(pk)) {
+            if (applyWhitelist && white != null && !white.isEmpty() && !white.contains(pk)) {
                 continue;
             }
             Drawable icon = null;
@@ -525,7 +533,7 @@ public class MainActivity extends Activity {
 
         GridLayout grid = new GridLayout(this);
         grid.setColumnCount(3);
-        for (AppInfo ai : loadApps()) {
+        for (AppInfo ai : loadApps(true)) {
             LinearLayout cell = new LinearLayout(this);
             cell.setOrientation(LinearLayout.VERTICAL);
             cell.setGravity(Gravity.CENTER);
@@ -692,7 +700,7 @@ public class MainActivity extends Activity {
         if (mode == MODE_DOCK) {
             addPickerRow("系统设置", SYS_SETTINGS);
         }
-        for (AppInfo ai : loadApps()) {
+        for (AppInfo ai : loadApps(false)) {
             addPickerRow(ai.label, ai.pkg);
         }
         pickerList.addView(hint(pickerMode == MODE_DOCK
@@ -925,6 +933,11 @@ public class MainActivity extends Activity {
     private String uiFontLabel() {
         int i = uiFontIdx();
         return i == 0 ? "界面字号：标准" : i == 1 ? "界面字号：大" : "界面字号：特大";
+    }
+
+    private String bgModeLabel() {
+        return "cover".equals(p.getString("wf_bg_mode", "cover"))
+                ? "背景显示模式：铺满全屏（裁剪）" : "背景显示模式：完整显示（留边）";
     }
 
     private int dp(int v) {

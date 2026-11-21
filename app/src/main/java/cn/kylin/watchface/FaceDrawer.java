@@ -96,10 +96,13 @@ public final class FaceDrawer {
 
         Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
-        // 背景：自定义图（完整显示整张图，不足处留黑边）或纯黑
+        // 背景：自定义图（铺满裁剪或完整留边，用户可选）或纯黑
         Bitmap bg = background(ctx, w, h);
         if (bg != null) {
-            float s = Math.min(w / (float) bg.getWidth(), h / (float) bg.getHeight());
+            boolean cover = "cover".equals(p.getString("wf_bg_mode", "cover"));
+            float s = cover
+                    ? Math.max(w / (float) bg.getWidth(), h / (float) bg.getHeight())
+                    : Math.min(w / (float) bg.getWidth(), h / (float) bg.getHeight());
             paint.setColor(Color.BLACK);
             c.drawRect(0, 0, w, h, paint);
             paint.setFilterBitmap(true);
