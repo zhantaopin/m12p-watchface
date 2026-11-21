@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
@@ -22,6 +23,7 @@ import android.widget.CheckBox;
 import android.widget.CompoundButton;
 import android.widget.FrameLayout;
 import android.widget.GridLayout;
+import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -53,7 +55,8 @@ public class MainActivity extends Activity {
     private ClockView clockView;
     private FrameLayout rootLayout;
     private LinearLayout mainBox, dock;
-    private ScrollView drawerBox;
+    private HorizontalScrollView pager;
+    private LinearLayout drawerList;
     private LinearLayout pickerBox;
     private TextView pickerTitle;
     private LinearLayout pickerList;
@@ -126,15 +129,31 @@ public class MainActivity extends Activity {
         rootLayout = new FrameLayout(this);
         rootLayout.setBackgroundColor(Color.BLACK);
 
-        // 时钟层（全屏）
-        clockView = new ClockView(this);
-        rootLayout.addView(clockView, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        // 双屏横向翻页容器：第0屏=表盘，第1屏=应用列表；跟手拖动、松手吸附
+        pager = new HorizontalScrollView(this);
+        pager.setFillViewport(true);
+        pager.setHorizontalScrollBarEnabled(false);
+        pager.setBackgroundColor(Color.BLACK);
 
-        // 左滑应用抽屉（九宫格），默认隐藏；位于 dock 之下，抽屉打开时底部快捷行仍可见
-        drawerBox = buildDrawer();
-        drawerBox.setVisibility(View.GONE);
-        rootLayout.addView(drawerBox, new FrameLayout.LayoutParams(
+        clockView = new ClockView(this);
+        LinearLayout pages = new LinearLayout(this);
+        pages.setOrientation(LinearLayout.HORIZONTAL);
+        int pw = getResources().getDisplayMetrics().widthPixels;
+        pages.addView(clockView, new LinearLayout.LayoutParams(
+                pw, ViewGroup.LayoutParams.MATCH_PARENT));
+        pages.addView(buildDrawerPage(), new LinearLayout.LayoutParams(
+                pw, ViewGroup.LayoutParams.MATCH_PARENT));
+        pager.addView(pages, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        // 松手后按滚动位置吸附到最近一屏，翻到应用屏时重建列表
+        pager.setOnTouchListener((v, e) -> {
+            int a = e.getActionMasked();
+            if (a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_CANCEL) {
+                pager.postDelayed(this::snapPager, 120);
+            }
+            return false;
+        });
+        rootLayout.addView(pager, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         // 底部快捷启动行（桌面模式用，编辑界面打开时隐藏）
@@ -165,9 +184,6 @@ public class MainActivity extends Activity {
             if (pickerBox.getVisibility() == View.VISIBLE) {
                 closePicker();
                 return;
-            }
-            if (!clockMode && drawerBox.getVisibility() == View.VISIBLE) {
-                closeDrawer();
             }
             clockMode = !clockMode;
             ((Button) v).setText(clockMode ? "≡" : "×");
@@ -221,7 +237,29 @@ public class MainActivity extends Activity {
             clockView.invalidate();
         });
         pv.addView(bgMode, wide());
-        pv.addView(hint("桌面模式：按 Home 键即回表盘；表盘血糖旁的眼睛图标可隐藏/显示血糖"));
+        pv.addView(title("调整背景位置（铺满模式生效）"));
+        LinearLayout posRow = new LinearLayout(this);
+        posRow.setOrientation(LinearLayout.HORIZONTAL);
+        Button bLeft = btn("◀");
+        bLeft.setOnClickListener(v -> nudgeBg(-0.05f, 0f));
+        Button bRight = btn("▶");
+        bRight.setOnClickListener(v -> nudgeBg(0.05f, 0f));
+        Button bUp = btn("▲");
+        bUp.setOnClickListener(v -> nudgeBg(0f, -0.05f));
+        Button bDown = btn("▼");
+        bDown.setOnClickListener(v -> nudgeBg(0f, 0.05f));
+        posRow.addView(bLeft, row());
+        posRow.addView(bRight, row());
+        posRow.addView(bUp, row());
+        posRow.addView(bDown, row());
+        pv.addView(posRow, wide());
+        Button resetPos = btn("重置背景位置");
+        resetPos.setOnClickListener(v -> {
+            p.edit().putFloat("wf_bg_dx", 0f).putFloat("wf_bg_dy", 0f).apply();
+            clockView.invalidate();
+        });
+        pv.addView(resetPos, wide());
+        pv.addView(hint("桌面模式：按 Home 键即回表盘；左右拖动在表盘/应用列表两屏间切换；表盘血糖旁的眼睛图标可隐藏/显示血糖"));
         previewPage = scrollWrap(pv);
 
         // 设置页
@@ -355,6 +393,28 @@ public class MainActivity extends Activity {
         }
     }
 
+    /** 双屏翻页吸附：按当前滚动位置回弹到表盘屏或应用屏 */
+    private void snapPager() {
+        int pw = getResources().getDisplayMetrics().widthPixels;
+        int page = pager.getScrollX() > pw / 2 ? 1 : 0;
+        pager.smoothScrollTo(page * pw, 0);
+        if (page == 1) {
+            rebuildDrawerPage();
+        }
+    }
+
+    /** 背景显示位置微调（铺满模式生效），范围 ±0.4 屏宽/屏高，步进 0.05 */
+    private void nudgeBg(float dx, float dy) {
+        float x = p.getFloat("wf_bg_dx", 0f) + dx;
+        float y = p.getFloat("wf_bg_dy", 0f) + dy;
+        if (x < -0.4f) x = -0.4f;
+        if (x > 0.4f) x = 0.4f;
+        if (y < -0.4f) y = -0.4f;
+        if (y > 0.4f) y = 0.4f;
+        p.edit().putFloat("wf_bg_dx", x).putFloat("wf_bg_dy", y).apply();
+        clockView.invalidate();
+    }
+
     /**
      * 底部快捷启动行：优先用用户配置（wf_dock_list，竖线分隔包名），
      * 未配置时探测默认候选（AAPS 包名随 fork 不同，逐个探测）。
@@ -479,57 +539,31 @@ public class MainActivity extends Activity {
         return out;
     }
 
-    private ScrollView buildDrawer() {
+    /** 第1屏：应用列表（九宫格，白名单过滤，空=全部） */
+    private ScrollView buildDrawerPage() {
         ScrollView sv = new ScrollView(this);
-        sv.setBackgroundColor(Color.argb(248, 10, 10, 10));
-        GestureDetector gd = new GestureDetector(this,
-                new GestureDetector.SimpleOnGestureListener() {
-                    @Override
-                    public boolean onDown(MotionEvent e) {
-                        return true;
-                    }
-
-                    @Override
-                    public boolean onFling(MotionEvent e1, MotionEvent e2,
-                                           float vx, float vy) {
-                        if (e1 == null || e2 == null) {
-                            return false;
-                        }
-                        float dx = e2.getX() - e1.getX(), dy = e2.getY() - e1.getY();
-                        if (Math.abs(dx) > dp(60) && Math.abs(dx) > Math.abs(dy)
-                                && Math.abs(vx) > 400) {
-                            closeDrawer();
-                            return true;
-                        }
-                        return false;
-                    }
-                });
-        sv.setOnTouchListener((v, e) -> {
-            gd.onTouchEvent(e);
-            return false;
-        });
+        sv.setFillViewport(true);
+        drawerList = new LinearLayout(this);
+        drawerList.setOrientation(LinearLayout.VERTICAL);
+        drawerList.setPadding(dp(4), dp(44), dp(4), dp(52));
+        sv.addView(drawerList, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        rebuildDrawerPage();
         return sv;
     }
 
-    private void openDrawer() {
-        drawerBox.removeAllViews();
-        LinearLayout wrap = new LinearLayout(this);
-        wrap.setOrientation(LinearLayout.VERTICAL);
-        wrap.setPadding(dp(4), dp(44), dp(4), dp(48));
-        LinearLayout headRow = new LinearLayout(this);
-        headRow.setOrientation(LinearLayout.HORIZONTAL);
-        headRow.setGravity(Gravity.CENTER_VERTICAL);
+    /** 重建应用网格（白名单/安装变化后调用） */
+    private void rebuildDrawerPage() {
+        if (drawerList == null) {
+            return;
+        }
+        drawerList.removeAllViews();
         TextView head = new TextView(this);
-        head.setText("全部应用（左右滑返回）");
+        head.setText("全部应用（左右拖动切换屏幕）");
         head.setTextColor(Color.rgb(130, 130, 130));
         head.setTextSize(13);
-        headRow.addView(head, new LinearLayout.LayoutParams(
-                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        Button close = btn("×");
-        close.setOnClickListener(v -> closeDrawer());
-        headRow.addView(close, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        wrap.addView(headRow, wide());
+        head.setGravity(Gravity.CENTER);
+        drawerList.addView(head, wide());
 
         GridLayout grid = new GridLayout(this);
         grid.setColumnCount(3);
@@ -573,13 +607,7 @@ public class MainActivity extends Activity {
             cp.setMargins(dp(2), dp(2), dp(2), dp(4));
             grid.addView(cell, cp);
         }
-        wrap.addView(grid, wide());
-        drawerBox.addView(wrap);
-        drawerBox.setVisibility(View.VISIBLE);
-    }
-
-    private void closeDrawer() {
-        drawerBox.setVisibility(View.GONE);
+        drawerList.addView(grid, wide());
     }
 
     // ---------------- 长按应用菜单 ----------------
@@ -707,7 +735,7 @@ public class MainActivity extends Activity {
                 ? "勾选顺序即为底部排列顺序" : "不勾选任何应用时抽屉显示全部"));
         pickerBox.setVisibility(View.VISIBLE);
         mainBox.setVisibility(View.GONE);
-        drawerBox.setVisibility(View.GONE);
+        rebuildDrawerPage();
         dock.setVisibility(View.GONE);
     }
 
@@ -785,8 +813,9 @@ public class MainActivity extends Activity {
                 || data == null || data.getData() == null) {
             return;
         }
+        java.io.File tmp = new java.io.File(getCacheDir(), "bg_src");
         try (InputStream in = getContentResolver().openInputStream(data.getData());
-             FileOutputStream out = openFileOutput("bg.png", MODE_PRIVATE)) {
+             FileOutputStream out = new FileOutputStream(tmp)) {
             byte[] buf = new byte[8192];
             int n;
             while ((n = in.read(buf)) > 0) {
@@ -796,6 +825,43 @@ public class MainActivity extends Activity {
             Toast.makeText(this, "复制图片失败：" + t.getMessage(), Toast.LENGTH_LONG).show();
             return;
         }
+        // 解码 + 应用 EXIF 方向（相机竖拍照片像素为横向存储，需旋转），压缩保存
+        try {
+            BitmapFactory.Options bo = new BitmapFactory.Options();
+            bo.inJustDecodeBounds = true;
+            BitmapFactory.decodeFile(tmp.getAbsolutePath(), bo);
+            BitmapFactory.Options b = new BitmapFactory.Options();
+            b.inSampleSize = Math.max(1, Math.max(bo.outWidth, bo.outHeight) / 1600);
+            android.graphics.Bitmap raw = BitmapFactory.decodeFile(tmp.getAbsolutePath(), b);
+            int rot = 0;
+            try {
+                android.media.ExifInterface ex =
+                        new android.media.ExifInterface(tmp.getAbsolutePath());
+                int o = ex.getAttributeInt(android.media.ExifInterface.TAG_ORIENTATION,
+                        android.media.ExifInterface.ORIENTATION_NORMAL);
+                if (o == android.media.ExifInterface.ORIENTATION_ROTATE_90) {
+                    rot = 90;
+                } else if (o == android.media.ExifInterface.ORIENTATION_ROTATE_180) {
+                    rot = 180;
+                } else if (o == android.media.ExifInterface.ORIENTATION_ROTATE_270) {
+                    rot = 270;
+                }
+            } catch (Throwable ignored) {
+            }
+            if (rot != 0) {
+                android.graphics.Matrix m = new android.graphics.Matrix();
+                m.postRotate(rot);
+                raw = android.graphics.Bitmap.createBitmap(
+                        raw, 0, 0, raw.getWidth(), raw.getHeight(), m, true);
+            }
+            FileOutputStream out = openFileOutput("bg.png", MODE_PRIVATE);
+            raw.compress(android.graphics.Bitmap.CompressFormat.PNG, 90, out);
+            out.close();
+        } catch (Throwable t) {
+            Toast.makeText(this, "处理图片失败：" + t.getMessage(), Toast.LENGTH_LONG).show();
+            return;
+        }
+        tmp.delete();
         p.edit().putString("wf_bg", new File(getFilesDir(), "bg.png").getAbsolutePath()).apply();
         FaceDrawer.invalidateBg();
         clockView.invalidate();
@@ -839,21 +905,6 @@ public class MainActivity extends Activity {
                 public boolean onSingleTapConfirmed(MotionEvent e) {
                     if (FaceDrawer.eyeRect().contains(e.getX(), e.getY())) {
                         toggleBgHide();
-                        return true;
-                    }
-                    return false;
-                }
-
-                @Override
-                public boolean onFling(MotionEvent e1, MotionEvent e2,
-                                       float vx, float vy) {
-                    if (e1 == null || e2 == null) {
-                        return false;
-                    }
-                    float dx = e2.getX() - e1.getX(), dy = e2.getY() - e1.getY();
-                    if (Math.abs(dx) > dp(60) && Math.abs(dx) > Math.abs(dy)
-                            && Math.abs(vx) > 400) {
-                        openDrawer();
                         return true;
                     }
                     return false;

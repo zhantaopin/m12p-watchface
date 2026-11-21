@@ -96,7 +96,7 @@ public final class FaceDrawer {
 
         Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
-        // 背景：自定义图（铺满裁剪或完整留边，用户可选）或纯黑
+        // 背景：自定义图（铺满裁剪可调位置 / 完整留边，用户可选）或纯黑
         Bitmap bg = background(ctx, w, h);
         if (bg != null) {
             boolean cover = "cover".equals(p.getString("wf_bg_mode", "cover"));
@@ -106,9 +106,13 @@ public final class FaceDrawer {
             paint.setColor(Color.BLACK);
             c.drawRect(0, 0, w, h, paint);
             paint.setFilterBitmap(true);
-            c.drawBitmap(bg,
-                    (w - bg.getWidth() * s) / 2f,
-                    (h - bg.getHeight() * s) / 2f, paint);
+            float offX = (w - bg.getWidth() * s) / 2f;
+            float offY = (h - bg.getHeight() * s) / 2f;
+            if (cover) {
+                offX += p.getFloat("wf_bg_dx", 0f) * w;
+                offY += p.getFloat("wf_bg_dy", 0f) * h;
+            }
+            c.drawBitmap(bg, offX, offY, paint);
             paint.setFilterBitmap(false);
         } else {
             paint.setColor(Color.BLACK);
