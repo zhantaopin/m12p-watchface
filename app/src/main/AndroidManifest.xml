@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.SET_WALLPAPER" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+
+    <application
+        android:allowBackup="false"
+        android:label="表盘"
+        android:theme="@android:style/Theme.Material.NoActionBar">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|keyboardHidden">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+                <!-- 桌面模式：可设为默认主屏幕，按 Home 键即表盘 -->
+                <category android:name="android.intent.category.HOME" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!-- 静态壁纸推送服务（v4 主路径）：每分钟 setBitmap 写系统壁纸 -->
+        <service
+            android:name=".WallpaperPushService"
+            android:exported="false" />
+
+        <!-- 表盘壁纸服务 -->
+        <service
+            android:name=".WatchfaceService"
+            android:exported="true"
+            android:label="血糖表盘"
+            android:permission="android.permission.BIND_WALLPAPER">
+            <intent-filter>
+                <action android:name="android.service.wallpaper.WallpaperService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.service.wallpaper"
+                android:resource="@xml/watchface_info" />
+        </service>
+
+        <!-- 血糖广播接收器：必须 manifest 声明（AAPS 插件为定向广播，运行时注册收不到） -->
+        <receiver
+            android:name=".BgReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="info.nightscout.androidaps.status" />
+                <action android:name="cn.diyaps.sharing.OT_APP" />
+                <action android:name="info.nightscout.androidaps.action.OTTAI_APP" />
+            </intent-filter>
+        </receiver>
+    </application>
+
+</manifest>
