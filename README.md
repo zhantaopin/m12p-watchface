@@ -4,6 +4,8 @@
 
 English users: see [License](#许可证license) — noncommercial use is free; commercial use requires the author's written permission (contact: 462531904@qq.com).
 
+**详细使用说明（安装/数据源配置/常见问题）：[docs/USAGE.md](docs/USAGE.md)**
+
 ## 功能
 
 - **表盘**：大号时间/日期、血糖值 + 趋势箭头 + 时效 + delta、IOB/COB、手表电量、数据源角标；血糖高于/低于阈值自动变红
