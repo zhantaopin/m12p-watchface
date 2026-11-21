@@ -1,4 +1,4 @@
-package cn.kylin.watchface;
+package io.github.zhantaopin.watchface;
 
 import android.app.Activity;
 import android.app.AlertDialog;

@@ -1,4 +1,4 @@
-package cn.kylin.watchface;
+package io.github.zhantaopin.watchface;
 
 import android.content.Context;
 import android.content.Intent;

@@ -76,7 +76,7 @@ adb install -r watchface-x.x-debug.apk
 - AAPS 前台运行中，CGM 5 分钟一跳，等 1~2 个周期
 
 **2. 设为主屏幕后按 Home 还是原桌面**
-- 重启手表；仍不行用 ADB 强制：`adb shell cmd package set-home-activity cn.kylin.watchface/cn.kylin.watchface.MainActivity`
+- 重启手表；仍不行用 ADB 强制：`adb shell cmd package set-home-activity io.github.zhantaopin.watchface/io.github.zhantaopin.watchface.MainActivity`
 
 **3. 背景图方向不对 / 只显示一块**
 - v1.7 起已自动应用 EXIF 方向，重新选一次图
