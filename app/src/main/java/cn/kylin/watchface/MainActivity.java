@@ -2,23 +2,41 @@ package cn.kylin.watchface;
 
 import android.app.Activity;
 import android.app.WallpaperManager;
-import android.content.ComponentName;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.Drawable;
+import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.widget.Button;
+import android.widget.CheckBox;
+import android.widget.CompoundButton;
 import android.widget.FrameLayout;
+import android.widget.GridLayout;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
+
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.text.Collator;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 
 /**
  * 全屏时钟（主模式）：打开即表盘；右上角小按钮进入编辑界面（设置/嗅探/预览）。
@@ -29,12 +47,27 @@ public class MainActivity extends Activity {
     private final Handler ui = new Handler(Looper.getMainLooper());
     private SharedPreferences p;
     private boolean clockMode = true;
+    private float touchX, touchY; // 手势起点（表盘左滑/抽屉右滑共用）
 
     private ClockView clockView;
+    private FrameLayout rootLayout;
     private LinearLayout mainBox, dock;
-    private TextView sniffText, srcValue, unitValue, offsetValue;
+    private ScrollView drawerBox;
+    private LinearLayout pickerBox;
+    private TextView pickerTitle;
+    private LinearLayout pickerList;
+    /** 抽屉白名单/快捷入口选择模式：0=抽屉 1=快捷入口 */
+    private int pickerMode;
+    private final List<String> pickedPkgs = new ArrayList<>();
+    private TextView sniffText, srcValue, unitValue, offsetValue, fontValue;
     private Button tabPreview, tabSetting, tabSniff;
     private View previewPage, settingPage, sniffPage;
+
+    private static final int REQ_PICK_IMAGE = 42;
+    private static final int MODE_DRAWER = 0;
+    private static final int MODE_DOCK = 1;
+    private static final String SYS_SETTINGS = "sys:settings";
+    private static final int[] FONT_LEVELS = {12, 14, 16}; // 抽屉字体三档 sp
 
     /** 每分钟走时 */
     private final Runnable tick = new Runnable() {
@@ -91,23 +124,35 @@ public class MainActivity extends Activity {
     // ---------------- UI ----------------
 
     private void buildUi() {
-        FrameLayout root = new FrameLayout(this);
-        root.setBackgroundColor(Color.BLACK);
+        rootLayout = new FrameLayout(this);
+        rootLayout.setBackgroundColor(Color.BLACK);
 
         // 时钟层（全屏）
         clockView = new ClockView(this);
-        root.addView(clockView, new FrameLayout.LayoutParams(
+        rootLayout.addView(clockView, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        // 左滑应用抽屉（九宫格），默认隐藏；位于 dock 之下，抽屉打开时底部快捷行仍可见
+        drawerBox = buildDrawer();
+        drawerBox.setVisibility(View.GONE);
+        rootLayout.addView(drawerBox, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         // 底部快捷启动行（桌面模式用，编辑界面打开时隐藏）
         dock = buildDock();
-        root.addView(dock, new FrameLayout.LayoutParams(
+        rootLayout.addView(dock, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.BOTTOM));
 
+        // 应用选择器（白名单/快捷入口），默认隐藏
+        pickerBox = buildPicker();
+        pickerBox.setVisibility(View.GONE);
+        rootLayout.addView(pickerBox, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
         // 编辑界面（预览/设置/嗅探）
         mainBox = buildMainBox();
-        root.addView(mainBox, new FrameLayout.LayoutParams(
+        rootLayout.addView(mainBox, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         // 右上角菜单按钮，始终可见
@@ -117,6 +162,13 @@ public class MainActivity extends Activity {
         mp.gravity = Gravity.TOP | Gravity.END;
         mp.setMargins(0, dp(4), dp(4), 0);
         menu.setOnClickListener(v -> {
+            if (pickerBox.getVisibility() == View.VISIBLE) {
+                closePicker();
+                return;
+            }
+            if (!clockMode && drawerBox.getVisibility() == View.VISIBLE) {
+                closeDrawer();
+            }
             clockMode = !clockMode;
             ((Button) v).setText(clockMode ? "≡" : "×");
             mainBox.setVisibility(clockMode ? View.GONE : View.VISIBLE);
@@ -124,9 +176,9 @@ public class MainActivity extends Activity {
             applyImmersive();
             refreshAll();
         });
-        root.addView(menu, mp);
+        rootLayout.addView(menu, mp);
 
-        setContentView(root);
+        setContentView(rootLayout);
     }
 
     private LinearLayout buildMainBox() {
@@ -158,6 +210,12 @@ public class MainActivity extends Activity {
         Button setHome = btn("设为主屏幕（桌面模式）");
         setHome.setOnClickListener(v -> setAsHome());
         pv.addView(setHome, wide());
+        Button pickBg = btn("更换背景图");
+        pickBg.setOnClickListener(v -> pickBgImage());
+        pv.addView(pickBg, wide());
+        Button resetBg = btn("恢复纯黑背景");
+        resetBg.setOnClickListener(v -> resetBg());
+        pv.addView(resetBg, wide());
         pv.addView(hint("桌面模式：按 Home 键即回表盘，图标不遮挡；壁纸模式会被应用图标覆盖"));
         previewPage = pv;
 
@@ -200,6 +258,29 @@ public class MainActivity extends Activity {
 
         st.addView(hint("AAPS 源数值已含固定偏移，此项保持 0 即与 AAPS 显示一致"));
 
+        st.addView(title("应用抽屉（表盘左滑呼出）"));
+        fontValue = btn("抽屉字体：中");
+        fontValue.setOnClickListener(v -> {
+            int cur = fontSp(), idx = 0;
+            for (int i = 0; i < FONT_LEVELS.length; i++) {
+                if (FONT_LEVELS[i] == cur) {
+                    idx = i;
+                }
+            }
+            p.edit().putInt("wf_drawer_font",
+                    FONT_LEVELS[(idx + 1) % FONT_LEVELS.length]).apply();
+            refreshAll();
+        });
+        st.addView(fontValue, wide());
+        Button pickDrawer = btn("选择应用（白名单，空=全部）");
+        pickDrawer.setOnClickListener(v -> openPicker(MODE_DRAWER));
+        st.addView(pickDrawer, wide());
+
+        st.addView(title("快捷入口（底部一行）"));
+        Button pickDock = btn("选择快捷入口（最多4个）");
+        pickDock.setOnClickListener(v -> openPicker(MODE_DOCK));
+        st.addView(pickDock, wide());
+
         LinearLayout spacer = new LinearLayout(this);
         spacer.setOrientation(LinearLayout.VERTICAL);
         st.addView(spacer, new LinearLayout.LayoutParams(
@@ -240,6 +321,7 @@ public class MainActivity extends Activity {
         srcValue.setText(aaps ? "AAPS" : "欧态");
         unitValue.setText(mmol ? "mmol/L" : "mg/dL");
         offsetValue.setText(String.format(java.util.Locale.US, "%.2f", p.getFloat("offset", 0f)));
+        fontValue.setText(sizeLabel(fontSp()));
         String sniff = p.getString("sniff", null);
         sniffText.setText(sniff == null
                 ? "尚未收到广播\n\n检查：1) AAPS 配置启用 Tizen 同步插件\n2) 或欧态 app 是否在发数据\n收到下一次血糖读数后此页出现原文"
@@ -281,8 +363,8 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * 底部快捷启动行：探测已安装的常用应用，点击直接启动。
-     * AAPS 的包名随 fork 不同，逐个候选探测。
+     * 底部快捷启动行：优先用用户配置（wf_dock_list，竖线分隔包名），
+     * 未配置时探测默认候选（AAPS 包名随 fork 不同，逐个探测）。
      */
     private LinearLayout buildDock() {
         LinearLayout d = new LinearLayout(this);
@@ -290,41 +372,365 @@ public class MainActivity extends Activity {
         d.setGravity(Gravity.CENTER);
         d.setPadding(dp(4), 0, dp(4), dp(2));
 
-        String[][] candidates = {
-                {"AAPS", "info.nightscout.androidaps", "info.nightscout.aaps", "app.aaps"},
-                {"欧态", "com.ottai.tag.watch"},
-                {"设置", null}, // 系统设置固定入口
-        };
-        for (String[] cand : candidates) {
-            Intent launch = null;
-            if (cand[1] == null) {
+        for (String[] e : dockEntries()) {
+            final Intent launch;
+            if (SYS_SETTINGS.equals(e[1])) {
                 launch = new Intent(android.provider.Settings.ACTION_SETTINGS);
             } else {
-                for (int i = 1; i < cand.length; i++) {
-                    launch = getPackageManager().getLaunchIntentForPackage(cand[i]);
-                    if (launch != null) {
-                        break;
-                    }
+                launch = getPackageManager().getLaunchIntentForPackage(e[1]);
+            }
+            if (launch == null) {
+                continue;
+            }
+            final Intent f = launch;
+            TextView t = new TextView(this);
+            t.setText(e[0]);
+            t.setTextColor(Color.rgb(180, 180, 180));
+            t.setTextSize(13);
+            t.setPadding(dp(12), dp(8), dp(12), dp(8));
+            t.setOnClickListener(v -> {
+                try {
+                    f.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    startActivity(f);
+                } catch (Throwable ignored) {
                 }
-            }
-            if (launch != null) {
-                final Intent f = launch;
-                TextView t = new TextView(this);
-                t.setText(cand[0]);
-                t.setTextColor(Color.rgb(180, 180, 180));
-                t.setTextSize(13);
-                t.setPadding(dp(14), dp(8), dp(14), dp(8));
-                t.setOnClickListener(v -> {
-                    try {
-                        f.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                        startActivity(f);
-                    } catch (Throwable ignored) {
-                    }
-                });
-                d.addView(t);
-            }
+            });
+            d.addView(t);
         }
         return d;
+    }
+
+    private List<String[]> dockEntries() {
+        List<String[]> out = new ArrayList<>();
+        String saved = p.getString("wf_dock_list", "");
+        if (saved.isEmpty()) {
+            addDockEntry(out, "AAPS", "info.nightscout.androidaps", "info.nightscout.aaps", "app.aaps");
+            addDockEntry(out, "欧态", "com.ottai.tag.watch");
+            out.add(new String[]{"设置", SYS_SETTINGS});
+            return out;
+        }
+        for (String e : saved.split("\\|")) {
+            if (e.isEmpty()) {
+                continue;
+            }
+            if (SYS_SETTINGS.equals(e)) {
+                out.add(new String[]{"设置", SYS_SETTINGS});
+            } else {
+                String label;
+                try {
+                    label = getPackageManager().getApplicationInfo(e, 0)
+                            .loadLabel(getPackageManager()).toString();
+                } catch (Throwable t) {
+                    label = e;
+                }
+                out.add(new String[]{label, e});
+            }
+        }
+        return out;
+    }
+
+    private void addDockEntry(List<String[]> out, String label, String... pkgs) {
+        for (String pk : pkgs) {
+            if (getPackageManager().getLaunchIntentForPackage(pk) != null) {
+                out.add(new String[]{label, pk});
+                return;
+            }
+        }
+    }
+
+    /** 快捷入口配置变化后重建底部行 */
+    private void rebuildDock() {
+        rootLayout.removeView(dock);
+        dock = buildDock();
+        rootLayout.addView(dock, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM));
+    }
+
+    // ---------------- 应用抽屉 ----------------
+
+    private static class AppInfo {
+        final String label, pkg;
+        final Drawable icon;
+
+        AppInfo(String l, String pk, Drawable ic) {
+            label = l;
+            pkg = pk;
+            icon = ic;
+        }
+    }
+
+    /** 可启动应用列表：排除自身，应用白名单过滤，按中文名排序 */
+    private List<AppInfo> loadApps() {
+        List<AppInfo> out = new ArrayList<>();
+        android.content.pm.PackageManager pm = getPackageManager();
+        Intent q = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER);
+        Set<String> white = p.getStringSet("wf_drawer_apps", null);
+        for (android.content.pm.ResolveInfo ri : pm.queryIntentActivities(q, 0)) {
+            String pk = ri.activityInfo.packageName;
+            if (pk.equals(getPackageName())) {
+                continue;
+            }
+            if (white != null && !white.isEmpty() && !white.contains(pk)) {
+                continue;
+            }
+            Drawable icon = null;
+            try {
+                icon = ri.loadIcon(pm);
+            } catch (Throwable ignored) {
+            }
+            out.add(new AppInfo(ri.loadLabel(pm).toString(), pk, icon));
+        }
+        Collator col = Collator.getInstance(Locale.CHINA);
+        Collections.sort(out, (a, b) -> col.compare(a.label, b.label));
+        return out;
+    }
+
+    private ScrollView buildDrawer() {
+        ScrollView sv = new ScrollView(this);
+        sv.setBackgroundColor(Color.argb(248, 10, 10, 10));
+        sv.setOnTouchListener((v, e) -> {
+            if (e.getAction() == MotionEvent.ACTION_DOWN) {
+                touchX = e.getX();
+                touchY = e.getY();
+            } else if (e.getAction() == MotionEvent.ACTION_UP) {
+                float dx = e.getX() - touchX, dy = e.getY() - touchY;
+                if (dx > dp(60) && Math.abs(dx) > Math.abs(dy)) {
+                    closeDrawer();
+                    return true;
+                }
+            }
+            return false;
+        });
+        return sv;
+    }
+
+    private void openDrawer() {
+        drawerBox.removeAllViews();
+        LinearLayout wrap = new LinearLayout(this);
+        wrap.setOrientation(LinearLayout.VERTICAL);
+        wrap.setPadding(dp(4), dp(44), dp(4), dp(48));
+        TextView head = new TextView(this);
+        head.setText("全部应用（右滑返回）");
+        head.setTextColor(Color.rgb(130, 130, 130));
+        head.setTextSize(12);
+        head.setGravity(Gravity.CENTER);
+        wrap.addView(head, wide());
+
+        GridLayout grid = new GridLayout(this);
+        grid.setColumnCount(3);
+        int font = fontSp();
+        for (AppInfo ai : loadApps()) {
+            LinearLayout cell = new LinearLayout(this);
+            cell.setOrientation(LinearLayout.VERTICAL);
+            cell.setGravity(Gravity.CENTER);
+            cell.setPadding(dp(4), dp(8), dp(4), dp(8));
+            ImageView iv = new ImageView(this);
+            iv.setImageDrawable(ai.icon);
+            LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(dp(36), dp(36));
+            ip.setMargins(0, 0, 0, dp(4));
+            cell.addView(iv, ip);
+            TextView tv = new TextView(this);
+            tv.setText(ai.label);
+            tv.setTextColor(Color.rgb(205, 205, 205));
+            tv.setTextSize(font);
+            tv.setGravity(Gravity.CENTER);
+            tv.setMaxLines(2);
+            tv.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            cell.addView(tv, new LinearLayout.LayoutParams(
+                    dp(108), LinearLayout.LayoutParams.WRAP_CONTENT));
+            cell.setOnClickListener(v -> {
+                try {
+                    Intent i = getPackageManager().getLaunchIntentForPackage(ai.pkg);
+                    if (i != null) {
+                        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        startActivity(i);
+                    }
+                } catch (Throwable ignored) {
+                }
+            });
+            GridLayout.LayoutParams cp = new GridLayout.LayoutParams(
+                    GridLayout.spec(GridLayout.UNDEFINED, 1f),
+                    GridLayout.spec(GridLayout.UNDEFINED, 1f));
+            cp.width = 0;
+            cp.setMargins(dp(2), dp(2), dp(2), dp(4));
+            grid.addView(cell, cp);
+        }
+        wrap.addView(grid, wide());
+        drawerBox.addView(wrap);
+        drawerBox.setVisibility(View.VISIBLE);
+    }
+
+    private void closeDrawer() {
+        drawerBox.setVisibility(View.GONE);
+    }
+
+    // ---------------- 应用选择器 ----------------
+
+    private LinearLayout buildPicker() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setBackgroundColor(Color.BLACK);
+        box.setPadding(dp(8), dp(44), dp(8), dp(8));
+        pickerTitle = new TextView(this);
+        pickerTitle.setTextColor(Color.WHITE);
+        pickerTitle.setTextSize(15);
+        pickerTitle.setPadding(0, 0, 0, dp(6));
+        box.addView(pickerTitle);
+        ScrollView sv = new ScrollView(this);
+        pickerList = new LinearLayout(this);
+        pickerList.setOrientation(LinearLayout.VERTICAL);
+        sv.addView(pickerList);
+        box.addView(sv, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        Button cancel = btn("取消");
+        Button save = btn("保存");
+        cancel.setOnClickListener(v -> closePicker());
+        save.setOnClickListener(v -> savePicker());
+        row.addView(cancel, row());
+        row.addView(save, row());
+        box.addView(row, wide());
+        return box;
+    }
+
+    private void openPicker(int mode) {
+        pickerMode = mode;
+        pickedPkgs.clear();
+        if (mode == MODE_DRAWER) {
+            pickerTitle.setText("选择应用（抽屉白名单）");
+            Set<String> cur = p.getStringSet("wf_drawer_apps", null);
+            if (cur != null) {
+                pickedPkgs.addAll(cur);
+            }
+        } else {
+            pickerTitle.setText("选择快捷入口（最多4个）");
+            String saved = p.getString("wf_dock_list", "");
+            if (!saved.isEmpty()) {
+                Collections.addAll(pickedPkgs, saved.split("\\|"));
+            }
+        }
+        pickerList.removeAllViews();
+        if (mode == MODE_DOCK) {
+            addPickerRow("系统设置", SYS_SETTINGS);
+        }
+        for (AppInfo ai : loadApps()) {
+            addPickerRow(ai.label, ai.pkg);
+        }
+        pickerList.addView(hint(pickerMode == MODE_DOCK
+                ? "勾选顺序即为底部排列顺序" : "不勾选任何应用时抽屉显示全部"));
+        pickerBox.setVisibility(View.VISIBLE);
+        mainBox.setVisibility(View.GONE);
+        drawerBox.setVisibility(View.GONE);
+        dock.setVisibility(View.GONE);
+    }
+
+    private void addPickerRow(String label, final String pkg) {
+        LinearLayout r = new LinearLayout(this);
+        r.setOrientation(LinearLayout.HORIZONTAL);
+        r.setGravity(Gravity.CENTER_VERTICAL);
+        TextView name = new TextView(this);
+        name.setText(label);
+        name.setTextColor(Color.rgb(210, 210, 210));
+        name.setTextSize(13);
+        name.setPadding(dp(6), dp(8), dp(4), dp(8));
+        CheckBox cb = new CheckBox(this);
+        cb.setChecked(pickedPkgs.contains(pkg));
+        cb.setOnCheckedChangeListener((CompoundButton b, boolean on) -> {
+            if (on) {
+                if (pickerMode == MODE_DOCK && pickedPkgs.size() >= 4) {
+                    cb.setChecked(false);
+                    Toast.makeText(this, "快捷入口最多4个", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                if (!pickedPkgs.contains(pkg)) {
+                    pickedPkgs.add(pkg);
+                }
+            } else {
+                pickedPkgs.remove(pkg);
+            }
+        });
+        r.addView(name, new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        r.addView(cb, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        pickerList.addView(r, wide());
+    }
+
+    private void savePicker() {
+        if (pickerMode == MODE_DRAWER) {
+            p.edit().putStringSet("wf_drawer_apps", new HashSet<>(pickedPkgs)).apply();
+            Toast.makeText(this, pickedPkgs.isEmpty()
+                    ? "抽屉将显示全部应用" : "抽屉白名单已保存（" + pickedPkgs.size() + "个）",
+                    Toast.LENGTH_SHORT).show();
+        } else {
+            p.edit().putString("wf_dock_list", String.join("|", pickedPkgs)).apply();
+            Toast.makeText(this, pickedPkgs.isEmpty()
+                    ? "快捷入口恢复默认" : "快捷入口已保存（" + pickedPkgs.size() + "个）",
+                    Toast.LENGTH_SHORT).show();
+            rebuildDock();
+        }
+        closePicker();
+    }
+
+    private void closePicker() {
+        pickerBox.setVisibility(View.GONE);
+        mainBox.setVisibility(clockMode ? View.GONE : View.VISIBLE);
+        dock.setVisibility(clockMode ? View.VISIBLE : View.GONE);
+    }
+
+    // ---------------- 背景图 ----------------
+
+    private void pickBgImage() {
+        Intent i = new Intent(Intent.ACTION_GET_CONTENT);
+        i.addCategory(Intent.CATEGORY_OPENABLE);
+        i.setType("image/*");
+        try {
+            startActivityForResult(Intent.createChooser(i, "选择背景图"), REQ_PICK_IMAGE);
+        } catch (Throwable t) {
+            Toast.makeText(this, "无法打开图片选择器", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int req, int code, Intent data) {
+        super.onActivityResult(req, code, data);
+        if (req != REQ_PICK_IMAGE || code != RESULT_OK
+                || data == null || data.getData() == null) {
+            return;
+        }
+        try (InputStream in = getContentResolver().openInputStream(data.getData());
+             FileOutputStream out = openFileOutput("bg.png", MODE_PRIVATE)) {
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) {
+                out.write(buf, 0, n);
+            }
+        } catch (Throwable t) {
+            Toast.makeText(this, "复制图片失败：" + t.getMessage(), Toast.LENGTH_LONG).show();
+            return;
+        }
+        p.edit().putString("wf_bg", new File(getFilesDir(), "bg.png").getAbsolutePath()).apply();
+        FaceDrawer.invalidateBg();
+        clockView.invalidate();
+        try {
+            WallpaperPushService.pushOnce(this);
+        } catch (Throwable ignored) {
+        }
+        Toast.makeText(this, "背景已更换", Toast.LENGTH_SHORT).show();
+    }
+
+    private void resetBg() {
+        new File(getFilesDir(), "bg.png").delete();
+        p.edit().remove("wf_bg").apply();
+        FaceDrawer.invalidateBg();
+        clockView.invalidate();
+        try {
+            WallpaperPushService.pushOnce(this);
+        } catch (Throwable ignored) {
+        }
+        Toast.makeText(this, "已恢复纯黑背景", Toast.LENGTH_SHORT).show();
     }
 
     // ---------------- 控件工具 ----------------
@@ -338,6 +744,22 @@ public class MainActivity extends Activity {
         @Override
         protected void onDraw(android.graphics.Canvas canvas) {
             FaceDrawer.draw(canvas, getContext(), true);
+        }
+
+        /** 表盘左滑呼出应用抽屉 */
+        @Override
+        public boolean onTouchEvent(MotionEvent e) {
+            if (e.getAction() == MotionEvent.ACTION_DOWN) {
+                touchX = e.getX();
+                touchY = e.getY();
+            } else if (e.getAction() == MotionEvent.ACTION_UP) {
+                float dx = e.getX() - touchX, dy = e.getY() - touchY;
+                if (dx < -dp(60) && Math.abs(dx) > Math.abs(dy)) {
+                    openDrawer();
+                    return true;
+                }
+            }
+            return super.onTouchEvent(e);
         }
     }
 
@@ -377,6 +799,14 @@ public class MainActivity extends Activity {
     private LinearLayout.LayoutParams wide() {
         return new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+    }
+
+    private int fontSp() {
+        return p.getInt("wf_drawer_font", 14);
+    }
+
+    private String sizeLabel(int sp) {
+        return sp == 12 ? "抽屉字体：小" : sp == 14 ? "抽屉字体：中" : "抽屉字体：大";
     }
 
     private int dp(int v) {

@@ -4,11 +4,15 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Typeface;
 import android.os.BatteryManager;
+
+import java.io.File;
 
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -46,6 +50,36 @@ public final class FaceDrawer {
     private FaceDrawer() {
     }
 
+    /** 背景图静态缓存：key = 路径+文件时间戳，避免每分钟重绘反复解码 */
+    private static Bitmap sBg;
+    private static String sBgKey;
+
+    /** 换背景后调用，强制下次重绘重新解码 */
+    public static void invalidateBg() {
+        sBg = null;
+        sBgKey = null;
+    }
+
+    private static Bitmap background(Context ctx, int w, int h) {
+        String path = ctx.getSharedPreferences("wf", Context.MODE_PRIVATE)
+                .getString("wf_bg", null);
+        if (path == null) {
+            return null;
+        }
+        File f = new File(path);
+        if (!f.exists()) {
+            return null;
+        }
+        String key = path + ":" + f.lastModified();
+        if (sBg == null || !key.equals(sBgKey)) {
+            BitmapFactory.Options o = new BitmapFactory.Options();
+            o.inSampleSize = 1;
+            sBg = BitmapFactory.decodeFile(path, o);
+            sBgKey = sBg != null ? key : null;
+        }
+        return sBg;
+    }
+
     public static void draw(Canvas c, Context ctx) {
         draw(c, ctx, false);
     }
@@ -61,10 +95,21 @@ public final class FaceDrawer {
 
         Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
-        // 背景
-        paint.setColor(Color.BLACK);
-        paint.setStyle(Paint.Style.FILL);
-        c.drawRect(0, 0, w, h, paint);
+        // 背景：自定义图（居中裁剪铺满）或纯黑
+        Bitmap bg = background(ctx, w, h);
+        if (bg != null) {
+            float s = Math.max(w / (float) bg.getWidth(), h / (float) bg.getHeight());
+            paint.setColor(Color.BLACK);
+            c.drawRect(0, 0, w, h, paint);
+            paint.setFilterBitmap(true);
+            c.drawBitmap(bg,
+                    (w - bg.getWidth() * s) / 2f,
+                    (h - bg.getHeight() * s) / 2f, paint);
+            paint.setFilterBitmap(false);
+        } else {
+            paint.setColor(Color.BLACK);
+            c.drawRect(0, 0, w, h, paint);
+        }
 
         // ---- 时间 ----
         String now = new SimpleDateFormat("HH:mm", Locale.getDefault()).format(new Date());
@@ -83,7 +128,7 @@ public final class FaceDrawer {
         c.drawText(date, w / 2f, timeY + 40 * unit, paint);
 
         // ---- 血糖块 ----
-        float bgY = h * 0.52f;
+        float bgY = h * 0.56f;
         boolean hasBg = p.contains("bg_mgdl");
         if (!hasBg) {
             paint.setColor(GRAY);
@@ -106,7 +151,7 @@ public final class FaceDrawer {
 
             paint.setColor(color);
             paint.setTypeface(Typeface.DEFAULT_BOLD);
-            paint.setTextSize(62 * unit);
+            paint.setTextSize(84 * unit);
             String valText = (mmol ? String.format(Locale.US, "%.1f", shown)
                     : String.valueOf((int) Math.round(shown))) + " " + arrow;
             c.drawText(valText, w / 2f, bgY, paint);
@@ -124,8 +169,8 @@ public final class FaceDrawer {
             }
             paint.setColor(GRAY);
             paint.setTypeface(Typeface.DEFAULT);
-            paint.setTextSize(22 * unit);
-            c.drawText(line2, w / 2f, bgY + 34 * unit, paint);
+            paint.setTextSize(24 * unit);
+            c.drawText(line2, w / 2f, bgY + 38 * unit, paint);
 
             // IOB/COB
             float iob = p.getFloat("iob", -1);
@@ -141,8 +186,8 @@ public final class FaceDrawer {
                     }
                     sb.append("COB ").append(String.format(Locale.US, "%.0fg", cob));
                 }
-                paint.setTextSize(22 * unit);
-                c.drawText(sb.toString(), w / 2f, bgY + 64 * unit, paint);
+                paint.setTextSize(24 * unit);
+                c.drawText(sb.toString(), w / 2f, bgY + 68 * unit, paint);
             }
         }
 
