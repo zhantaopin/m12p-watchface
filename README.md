@@ -22,8 +22,9 @@ English users: see [License](#许可证license) — noncommercial use is free; c
 
 ## 安装
 
-1. `adb install -r app-debug.apk` 或将 APK 放入手表可访问的下载地址，手表浏览器下载安装
-2. 打开「表盘」app → 预览页点「设为主屏幕（桌面模式）」，或按 Home 键在弹出的选择框中选择「表盘」并勾选始终
+1. 从 [Releases](https://github.com/zhantaopin/m12p-watchface/releases) 下载最新 APK
+2. `adb install -r watchface-x.x-debug.apk`，或将 APK 放入手表可访问的下载地址，手表浏览器下载安装
+3. 打开「表盘」app → 预览页点「设为主屏幕（桌面模式）」，或按 Home 键在弹出的选择框中选择「表盘」并勾选始终
 
 ## 数据源配置
 
