@@ -1,6 +1,6 @@
-# 控糖表盘（M12P Watchface）
+# 血糖表盘（M12P Watchface）
 
-**控糖表盘**是一款面向华强北 M12P（368×448、Android 8.1、无 Wear OS/GMS）等小屏安卓手表的**血糖表盘桌面**。以 HOME 桌面身份运行，通过广播从 AndroidAPS 或欧态（OTTAI）app 实时获取血糖数据，直接显示在表盘上。
+**血糖表盘**是一款面向华强北 M12P（368×448、Android 8.1、无 Wear OS/GMS）等小屏安卓手表的**血糖表盘桌面**。以 HOME 桌面身份运行，通过广播从 AndroidAPS 或欧态（OTTAI）app 实时获取血糖数据，直接显示在表盘上。
 
 English users: see [License](#许可证license) — noncommercial use is free; commercial use requires the author's written permission (contact: 462531904@qq.com).
 
@@ -28,7 +28,7 @@ English users: see [License](#许可证license) — noncommercial use is free; c
 
 1. 从 [Releases](https://github.com/zhantaopin/m12p-watchface/releases) 下载最新 APK
 2. `adb install -r watchface-x.x-debug.apk`，或将 APK 放入手表可访问的下载地址，手表浏览器下载安装
-3. 打开「控糖表盘」app → 预览页点「设为主屏幕（桌面模式）」，或按 Home 键在弹出的选择框中选择「控糖表盘」并勾选始终
+3. 打开「血糖表盘」app → 预览页点「设为主屏幕（桌面模式）」，或按 Home 键在弹出的选择框中选择「血糖表盘」并勾选始终
 
 ## 数据源配置
 

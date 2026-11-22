@@ -477,7 +477,7 @@ public class MainActivity extends Activity {
         try {
             startActivity(new Intent(android.provider.Settings.ACTION_HOME_SETTINGS));
         } catch (Throwable t) {
-            Toast.makeText(this, "无主屏幕设置页：请按 Home 键，在弹出选择框中选「控糖表盘」",
+            Toast.makeText(this, "无主屏幕设置页：请按 Home 键，在弹出选择框中选「血糖表盘」",
                     Toast.LENGTH_LONG).show();
         }
     }

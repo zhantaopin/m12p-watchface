@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""生成控糖表盘应用图标：自适应图标前景 PNG + 传统 mipmap。
+"""生成血糖表盘应用图标：自适应图标前景 PNG + 传统 mipmap。
 
 设计：深色底 + 白色圆环刻度 + 绿色血糖折线（末端圆点代表当前值）。
 运行：python3 tools/gen_icon.py

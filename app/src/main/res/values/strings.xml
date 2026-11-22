@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">控糖表盘</string>
+    <string name="app_name">血糖表盘</string>
     <string name="wp_desc">时间 + 血糖（AAPS / 欧态）</string>
 </resources>
