@@ -68,15 +68,29 @@ public class MainActivity extends Activity {
     private int pickerMode;
     private final List<String> pickedPkgs = new ArrayList<>();
     private TextView sniffText, srcValue, unitValue, offsetValue, fontValue, bgInfo;
-    private Button notifyValue, alwaysOnValue, styleValue;
+    private Button notifyValue, alwaysOnValue, styleValue, parentalValue;
     private LinearLayout styleBox, styleGrid;
     private Button tabPreview, tabSetting, tabSniff;
     private View previewPage, settingPage, sniffPage;
+
+    // 家长密码键盘（全屏遮罩）
+    private LinearLayout pinBox;
+    private TextView pinTitle, pinDots, pinError, pinForgot;
+    private final StringBuilder pinInput = new StringBuilder();
+    private int pinMode = PIN_NONE;
+    private int pinLen = 4;
+    private String pinFirst;
+    private Runnable pinOk, pinAfter;
 
     private static final int REQ_PICK_IMAGE = 42;
     private static final String SYS_SETTINGS = "sys:settings";
     private static final int MODE_DRAWER = 0;
     private static final int MODE_DOCK = 1;
+    private static final int PIN_NONE = 0;
+    private static final int PIN_VERIFY = 1;
+    private static final int PIN_RECOVERY = 2;
+    private static final int PIN_NEW1 = 3;
+    private static final int PIN_NEW2 = 4;
     private static final float[] UI_FONT_LEVELS = {1.0f, 1.2f, 1.4f}; // 界面字号三档
 
     /** 每分钟走时 */
@@ -229,17 +243,37 @@ public class MainActivity extends Activity {
                 closePicker();
                 return;
             }
-            clockMode = !clockMode;
-            ((Button) v).setText(clockMode ? "≡" : "×");
-            mainBox.setVisibility(clockMode ? View.GONE : View.VISIBLE);
-            updateDockVisibility();
-            updateKeepScreen();
-            applyImmersive();
-            refreshAll();
+            if (pinBox.getVisibility() == View.VISIBLE) {
+                return;
+            }
+            // 保护范围=全部设置时，进入编辑界面需先验证家长密码
+            if (clockMode && ParentalControl.enabled(p)
+                    && "all".equals(ParentalControl.scope(p))) {
+                requireParentPin(() -> toggleEdit((Button) v));
+                return;
+            }
+            toggleEdit((Button) v);
         });
         rootLayout.addView(menu, mp);
 
+        // 家长密码键盘放在最上层
+        pinBox = buildPinPad();
+        pinBox.setVisibility(View.GONE);
+        rootLayout.addView(pinBox, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
         setContentView(rootLayout);
+    }
+
+    /** 表盘/编辑界面切换 */
+    private void toggleEdit(Button menuBtn) {
+        clockMode = !clockMode;
+        menuBtn.setText(clockMode ? "≡" : "×");
+        mainBox.setVisibility(clockMode ? View.GONE : View.VISIBLE);
+        updateDockVisibility();
+        updateKeepScreen();
+        applyImmersive();
+        refreshAll();
     }
 
     private LinearLayout buildMainBox() {
@@ -366,13 +400,19 @@ public class MainActivity extends Activity {
         });
         st.addView(fontValue, wide());
         Button pickDrawer = btn("选择应用（白名单，空=全部）");
-        pickDrawer.setOnClickListener(v -> openPicker(MODE_DRAWER));
+        pickDrawer.setOnClickListener(v -> requireParentPin(() -> openPicker(MODE_DRAWER)));
         st.addView(pickDrawer, wide());
 
         st.addView(title("快捷入口（底部一行）"));
         Button pickDock = btn("选择快捷入口（最多4个）");
-        pickDock.setOnClickListener(v -> openPicker(MODE_DOCK));
+        pickDock.setOnClickListener(v -> requireParentPin(() -> openPicker(MODE_DOCK)));
         st.addView(pickDock, wide());
+
+        st.addView(title("家长控制"));
+        parentalValue = btn(parentalLabel());
+        parentalValue.setOnClickListener(v -> onParentalClick());
+        st.addView(parentalValue, wide());
+        st.addView(hint("开启后抽屉只显示勾选的应用（全不勾=不显示）；忘记密码点「忘记密码？」用 8 位恢复码重设"));
 
         st.addView(title("血糖通知（锁屏/通知栏）"));
         notifyValue = btn(notifyLabel());
@@ -453,6 +493,9 @@ public class MainActivity extends Activity {
         }
         if (alwaysOnValue != null) {
             alwaysOnValue.setText(alwaysOnLabel());
+        }
+        if (parentalValue != null) {
+            parentalValue.setText(parentalLabel());
         }
         updateBgInfo();
         String sniff = p.getString("sniff", null);
@@ -545,10 +588,11 @@ public class MainActivity extends Activity {
             chip.setCornerRadius(dp(12));
             t.setBackground(chip);
             t.setOnClickListener(v -> {
-                try {
-                    f.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                    startActivity(f);
-                } catch (Throwable ignored) {
+                // 家长模式下打开系统设置需验证，避免从快捷入口绕过白名单
+                if (SYS_SETTINGS.equals(e[1]) && ParentalControl.enabled(p)) {
+                    requireParentPin(() -> launchIntent(f));
+                } else {
+                    launchIntent(f);
                 }
             });
             d.addView(t);
@@ -627,8 +671,15 @@ public class MainActivity extends Activity {
             if (pk.equals(getPackageName())) {
                 continue;
             }
-            if (applyWhitelist && white != null && !white.isEmpty() && !white.contains(pk)) {
-                continue;
+            // 家长模式下白名单为严格模式：未勾选一律不显示
+            if (applyWhitelist) {
+                if (ParentalControl.enabled(p)) {
+                    if (white == null || !white.contains(pk)) {
+                        continue;
+                    }
+                } else if (white != null && !white.isEmpty() && !white.contains(pk)) {
+                    continue;
+                }
             }
             Drawable icon = null;
             try {
@@ -680,16 +731,30 @@ public class MainActivity extends Activity {
             return;
         }
         drawerList.removeAllViews();
+        List<AppInfo> apps = loadApps(true);
+        boolean strict = ParentalControl.enabled(p);
         TextView head = new TextView(this);
-        head.setText("全部应用（左右拖动切换屏幕）");
+        head.setText(strict ? "家长模式 · 已授权应用" : "全部应用（左右拖动切换屏幕）");
         head.setTextColor(Color.rgb(130, 130, 130));
         head.setTextSize(14 * uiFont());
         head.setGravity(Gravity.CENTER);
         drawerList.addView(head, wide());
 
+        if (apps.isEmpty()) {
+            TextView empty = new TextView(this);
+            empty.setText(strict
+                    ? "未授权任何应用\n请到 设置 → 家长控制 中授权"
+                    : "没有可启动的应用");
+            empty.setTextColor(Color.rgb(120, 120, 120));
+            empty.setTextSize(14 * uiFont());
+            empty.setGravity(Gravity.CENTER);
+            empty.setPadding(0, dp(60), 0, 0);
+            drawerList.addView(empty, wide());
+        }
+
         GridLayout grid = new GridLayout(this);
         grid.setColumnCount(3);
-        for (AppInfo ai : loadApps(true)) {
+        for (AppInfo ai : apps) {
             LinearLayout cell = new LinearLayout(this);
             cell.setOrientation(LinearLayout.VERTICAL);
             cell.setGravity(Gravity.CENTER);
@@ -739,6 +804,14 @@ public class MainActivity extends Activity {
         if (SYS_SETTINGS.equals(ai.pkg)) {
             return;
         }
+        if (ParentalControl.enabled(p)) {
+            requireParentPin(() -> showAppMenuNow(ai));
+            return;
+        }
+        showAppMenuNow(ai);
+    }
+
+    private void showAppMenuNow(AppInfo ai) {
         new AlertDialog.Builder(this)
                 .setTitle(ai.label)
                 .setItems(new String[]{"固定到快捷入口", "应用信息", "卸载"},
@@ -826,7 +899,9 @@ public class MainActivity extends Activity {
         save.setOnClickListener(v -> savePicker());
         row.addView(cancel, row());
         row.addView(save, row());
-        box.addView(row, wide());
+        // 固定底栏高度，避免应用数量多时被列表挤压
+        box.addView(row, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(52)));
         return box;
     }
 
@@ -854,7 +929,10 @@ public class MainActivity extends Activity {
             addPickerRow(ai.label, ai.pkg);
         }
         pickerList.addView(hint(pickerMode == MODE_DOCK
-                ? "勾选顺序即为底部排列顺序" : "不勾选任何应用时抽屉显示全部"));
+                ? "勾选顺序即为底部排列顺序"
+                : ParentalControl.enabled(p)
+                ? "家长模式：只显示勾选的应用，全不勾则抽屉为空"
+                : "不勾选任何应用时抽屉显示全部"));
         pickerBox.setVisibility(View.VISIBLE);
         mainBox.setVisibility(View.GONE);
         rebuildDrawerPage();
@@ -896,9 +974,15 @@ public class MainActivity extends Activity {
     private void savePicker() {
         if (pickerMode == MODE_DRAWER) {
             p.edit().putStringSet("wf_drawer_apps", new HashSet<>(pickedPkgs)).apply();
-            Toast.makeText(this, pickedPkgs.isEmpty()
-                    ? "抽屉将显示全部应用" : "抽屉白名单已保存（" + pickedPkgs.size() + "个）",
-                    Toast.LENGTH_SHORT).show();
+            String msg;
+            if (ParentalControl.enabled(p)) {
+                msg = pickedPkgs.isEmpty()
+                        ? "未授权任何应用，抽屉为空" : "已授权 " + pickedPkgs.size() + " 个应用";
+            } else {
+                msg = pickedPkgs.isEmpty()
+                        ? "抽屉将显示全部应用" : "抽屉白名单已保存（" + pickedPkgs.size() + "个）";
+            }
+            Toast.makeText(this, msg, Toast.LENGTH_SHORT).show();
         } else {
             p.edit().putString("wf_dock_list", String.join("|", pickedPkgs)).apply();
             Toast.makeText(this, pickedPkgs.isEmpty()
@@ -1177,6 +1261,307 @@ public class MainActivity extends Activity {
         sv.addView(content, new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         return sv;
+    }
+
+    // ---------------- 家长控制 ----------------
+
+    private String parentalLabel() {
+        if (!ParentalControl.enabled(p)) {
+            return "家长控制：关";
+        }
+        return "家长控制：开（"
+                + ("all".equals(ParentalControl.scope(p)) ? "全部设置" : "仅应用管理") + "）";
+    }
+
+    private void onParentalClick() {
+        if (!ParentalControl.enabled(p)) {
+            startNewPin("设置家长密码（4 位）", () -> {
+                p.edit().putString("pc_scope", "apps").apply();
+                Toast.makeText(this, "家长控制已开启", Toast.LENGTH_SHORT).show();
+                refreshAll();
+                rebuildDrawerPage();
+            });
+            return;
+        }
+        requireParentPin(this::showParentalMenu);
+    }
+
+    private void showParentalMenu() {
+        final String scope = ParentalControl.scope(p);
+        new AlertDialog.Builder(this)
+                .setTitle("家长控制")
+                .setItems(new String[]{
+                        "保护范围：" + ("all".equals(scope) ? "全部设置" : "仅应用管理") + "（点此切换）",
+                        "修改家长密码",
+                        "关闭家长控制"}, (d, w) -> {
+                    if (w == 0) {
+                        p.edit().putString("pc_scope", "all".equals(scope) ? "apps" : "all").apply();
+                        Toast.makeText(this, parentalLabel(), Toast.LENGTH_SHORT).show();
+                        refreshAll();
+                    } else if (w == 1) {
+                        startNewPin("设置新密码（4 位）", null);
+                    } else {
+                        p.edit().putBoolean("pc_on", false).apply();
+                        Toast.makeText(this, "家长控制已关闭", Toast.LENGTH_SHORT).show();
+                        refreshAll();
+                        rebuildDrawerPage();
+                    }
+                }).show();
+    }
+
+    /** 已开启家长控制时先验证 PIN，未开启则直接执行 */
+    private void requireParentPin(Runnable onOk) {
+        if (!ParentalControl.enabled(p)) {
+            onOk.run();
+            return;
+        }
+        openPinPad("请输入家长密码", PIN_VERIFY, 4, true, onOk);
+    }
+
+    private void startNewPin(String title, Runnable after) {
+        pinAfter = after;
+        openPinPad(title, PIN_NEW1, 4, false, null);
+    }
+
+    private LinearLayout buildPinPad() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setBackgroundColor(Color.BLACK);
+        box.setPadding(dp(18), dp(16), dp(18), dp(6));
+        box.setClickable(true);
+
+        pinTitle = new TextView(this);
+        pinTitle.setTextColor(Color.WHITE);
+        pinTitle.setTextSize(17);
+        pinTitle.setGravity(Gravity.CENTER);
+        box.addView(pinTitle, wide());
+
+        pinDots = new TextView(this);
+        pinDots.setTextColor(Color.rgb(76, 175, 80));
+        pinDots.setTextSize(22);
+        pinDots.setGravity(Gravity.CENTER);
+        pinDots.setPadding(0, dp(6), 0, dp(2));
+        box.addView(pinDots, wide());
+
+        pinError = new TextView(this);
+        pinError.setTextColor(Color.rgb(255, 82, 82));
+        pinError.setTextSize(12);
+        pinError.setGravity(Gravity.CENTER);
+        pinError.setMinHeight(dp(22));
+        box.addView(pinError, wide());
+
+        String[][] keys = {
+                {"1", "2", "3"},
+                {"4", "5", "6"},
+                {"7", "8", "9"},
+                {"取消", "0", "⌫"}
+        };
+        for (String[] rowKeys : keys) {
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            for (String k : rowKeys) {
+                Button b = btn(k);
+                b.setTextSize("取消".equals(k) ? 14 : 20);
+                b.setOnClickListener(v -> onPinKey(k));
+                row.addView(b, row());
+            }
+            box.addView(row, wide());
+        }
+
+        pinForgot = new TextView(this);
+        pinForgot.setText("忘记密码？");
+        pinForgot.setTextColor(Color.rgb(130, 130, 130));
+        pinForgot.setTextSize(13);
+        pinForgot.setGravity(Gravity.CENTER);
+        pinForgot.setPadding(0, dp(8), 0, dp(4));
+        pinForgot.setOnClickListener(v -> startRecovery());
+        box.addView(pinForgot, wide());
+
+        return box;
+    }
+
+    private void openPinPad(String title, int mode, int len, boolean forgot, Runnable ok) {
+        if (pinBox == null) {
+            return;
+        }
+        pinMode = mode;
+        pinLen = len;
+        pinOk = ok;
+        pinFirst = null;
+        pinInput.setLength(0);
+        pinTitle.setText(title);
+        pinError.setText("");
+        pinForgot.setVisibility(forgot ? View.VISIBLE : View.GONE);
+        updatePinDots();
+        pinBox.setVisibility(View.VISIBLE);
+        mainBox.setVisibility(View.GONE);
+        dock.setVisibility(View.GONE);
+        long lock = ParentalControl.lockRemainMs(p);
+        if (lock > 0) {
+            pinError.setText("尝试过多，请 " + ((lock + 999) / 1000) + " 秒后重试");
+        }
+    }
+
+    /** 忘记 PIN：改用 8 位固定恢复码，校验通过后重设 PIN */
+    private void startRecovery() {
+        pinMode = PIN_RECOVERY;
+        pinLen = 8;
+        pinOk = null;
+        pinAfter = null;
+        pinFirst = null;
+        pinInput.setLength(0);
+        pinTitle.setText("输入 8 位恢复码");
+        pinError.setText("");
+        pinForgot.setVisibility(View.GONE);
+        updatePinDots();
+    }
+
+    private void onPinKey(String key) {
+        if (pinMode == PIN_NONE) {
+            return;
+        }
+        if ("取消".equals(key)) {
+            closePinPad();
+            return;
+        }
+        if ("⌫".equals(key)) {
+            if (pinInput.length() > 0) {
+                pinInput.setLength(pinInput.length() - 1);
+                updatePinDots();
+            }
+            return;
+        }
+        if (pinInput.length() >= pinLen) {
+            return;
+        }
+        pinInput.append(key);
+        updatePinDots();
+        if (pinInput.length() == pinLen) {
+            final String v = pinInput.toString();
+            ui.postDelayed(() -> completePin(v), 120);
+        }
+    }
+
+    private void completePin(String v) {
+        if (pinMode == PIN_NONE || pinInput.length() != pinLen || !v.contentEquals(pinInput)) {
+            return;
+        }
+        long lock = ParentalControl.lockRemainMs(p);
+        if (lock > 0) {
+            pinError.setText("尝试过多，请 " + ((lock + 999) / 1000) + " 秒后重试");
+            clearPinInput();
+            return;
+        }
+        switch (pinMode) {
+            case PIN_VERIFY: {
+                if (ParentalControl.checkPin(p, v)) {
+                    Runnable ok = pinOk;
+                    closePinPad();
+                    if (ok != null) {
+                        ok.run();
+                    }
+                } else {
+                    showPinFail("密码错误");
+                }
+                break;
+            }
+            case PIN_RECOVERY: {
+                if (ParentalControl.checkRecovery(p, v)) {
+                    Toast.makeText(this, "恢复码正确，请设置新密码", Toast.LENGTH_SHORT).show();
+                    startNewPin("设置新密码（4 位）", null);
+                } else {
+                    showPinFail("恢复码错误");
+                }
+                break;
+            }
+            case PIN_NEW1: {
+                pinFirst = v;
+                pinMode = PIN_NEW2;
+                pinTitle.setText("再次输入新密码");
+                pinError.setText("");
+                clearPinInput();
+                break;
+            }
+            case PIN_NEW2: {
+                if (v.equals(pinFirst)) {
+                    ParentalControl.setPin(p, v);
+                    Runnable after = pinAfter;
+                    pinFirst = null;
+                    closePinPad();
+                    Toast.makeText(this, "家长密码已保存", Toast.LENGTH_SHORT).show();
+                    refreshAll();
+                    if (after != null) {
+                        after.run();
+                    }
+                } else {
+                    pinFirst = null;
+                    pinMode = PIN_NEW1;
+                    pinTitle.setText("设置新密码（4 位）");
+                    pinError.setText("两次输入不一致，请重新设置");
+                    clearPinInput();
+                }
+                break;
+            }
+            default:
+                break;
+        }
+    }
+
+    private void showPinFail(String prefix) {
+        long lock = ParentalControl.lockRemainMs(p);
+        if (lock > 0) {
+            pinError.setText("尝试过多，已锁定 " + ((lock + 999) / 1000) + " 秒");
+        } else {
+            pinError.setText(prefix + "，还可尝试 " + ParentalControl.remainTries(p) + " 次");
+        }
+        clearPinInput();
+    }
+
+    private void clearPinInput() {
+        pinInput.setLength(0);
+        updatePinDots();
+    }
+
+    private void updatePinDots() {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < pinLen; i++) {
+            sb.append(i < pinInput.length() ? "●" : "○");
+            if (i != pinLen - 1) {
+                sb.append(' ');
+            }
+        }
+        pinDots.setText(sb.toString());
+    }
+
+    private void closePinPad() {
+        if (pinBox == null) {
+            return;
+        }
+        pinBox.setVisibility(View.GONE);
+        pinMode = PIN_NONE;
+        pinInput.setLength(0);
+        pinOk = null;
+        pinAfter = null;
+        pinFirst = null;
+        mainBox.setVisibility(clockMode ? View.GONE : View.VISIBLE);
+        updateDockVisibility();
+    }
+
+    private void launchIntent(Intent i) {
+        try {
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(i);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    @Override
+    public void onBackPressed() {
+        if (pinBox != null && pinBox.getVisibility() == View.VISIBLE) {
+            closePinPad();
+            return;
+        }
+        super.onBackPressed();
     }
 
     // ---------------- 控件工具 ----------------
