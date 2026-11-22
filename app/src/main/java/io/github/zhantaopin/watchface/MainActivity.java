@@ -64,6 +64,7 @@ public class MainActivity extends Activity {
     private int pickerMode;
     private final List<String> pickedPkgs = new ArrayList<>();
     private TextView sniffText, srcValue, unitValue, offsetValue, fontValue, bgInfo;
+    private Button notifyValue, alwaysOnValue;
     private Button tabPreview, tabSetting, tabSniff;
     private View previewPage, settingPage, sniffPage;
 
@@ -77,24 +78,52 @@ public class MainActivity extends Activity {
     private final Runnable tick = new Runnable() {
         @Override
         public void run() {
-            if (clockView != null && clockMode) {
+            // 灭屏时不重绘，避免无谓唤醒
+            if (clockView != null && clockMode && isInteractive()) {
                 clockView.invalidate();
             }
             ui.postDelayed(this, 60_000 - (System.currentTimeMillis() % 60_000) + 100);
         }
     };
 
+    /** 亮屏瞬间立即重绘，避免灭屏期间定时器暂停导致显示旧时间 */
+    private final android.content.BroadcastReceiver screenOn = new android.content.BroadcastReceiver() {
+        @Override
+        public void onReceive(android.content.Context context, android.content.Intent intent) {
+            if (clockView != null) {
+                clockView.invalidate();
+            }
+            updateKeepScreen();
+        }
+    };
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         p = getSharedPreferences("wf", MODE_PRIVATE);
+        updateKeepScreen();
 
         BgReceiver.uiRefresh = () -> ui.post(this::refreshAll);
 
         buildUi();
         refreshAll();
         ui.postDelayed(tick, 60_000 - (System.currentTimeMillis() % 60_000) + 100);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        registerReceiver(screenOn, new android.content.IntentFilter(Intent.ACTION_SCREEN_ON));
+        NotificationHelper.refresh(this);
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        try {
+            unregisterReceiver(screenOn);
+        } catch (Throwable ignored) {
+        }
     }
 
     @Override
@@ -189,6 +218,7 @@ public class MainActivity extends Activity {
             ((Button) v).setText(clockMode ? "≡" : "×");
             mainBox.setVisibility(clockMode ? View.GONE : View.VISIBLE);
             dock.setVisibility(clockMode ? View.VISIBLE : View.GONE);
+            updateKeepScreen();
             applyImmersive();
             refreshAll();
         });
@@ -323,6 +353,29 @@ public class MainActivity extends Activity {
         pickDock.setOnClickListener(v -> openPicker(MODE_DOCK));
         st.addView(pickDock, wide());
 
+        st.addView(title("血糖通知（锁屏/通知栏）"));
+        notifyValue = btn(notifyLabel());
+        notifyValue.setOnClickListener(v -> {
+            String cur = p.getString("wf_notify", "off");
+            String next = "off".equals(cur) ? "silent"
+                    : "silent".equals(cur) ? "alert" : "off";
+            p.edit().putString("wf_notify", next).apply();
+            notifyValue.setText(notifyLabel());
+            NotificationHelper.refresh(this);
+        });
+        st.addView(notifyValue, wide());
+        st.addView(hint("静默：通知栏可见，不亮屏不响；提醒：会亮屏弹出；关：不显示"));
+
+        st.addView(title("表盘常亮"));
+        alwaysOnValue = btn(alwaysOnLabel());
+        alwaysOnValue.setOnClickListener(v -> {
+            p.edit().putBoolean("wf_always_on", !p.getBoolean("wf_always_on", false)).apply();
+            alwaysOnValue.setText(alwaysOnLabel());
+            updateKeepScreen();
+        });
+        st.addView(alwaysOnValue, wide());
+        st.addView(hint("关：跟随系统超时熄屏，最省电（默认）；开：表盘一直亮着"));
+
         settingPage = scrollWrap(st);
 
         // 嗅探页
@@ -371,6 +424,12 @@ public class MainActivity extends Activity {
         unitValue.setText(mmol ? "mmol/L" : "mg/dL");
         offsetValue.setText(String.format(java.util.Locale.US, "%.2f", p.getFloat("offset", 0f)));
         fontValue.setText(uiFontLabel());
+        if (notifyValue != null) {
+            notifyValue.setText(notifyLabel());
+        }
+        if (alwaysOnValue != null) {
+            alwaysOnValue.setText(alwaysOnLabel());
+        }
         updateBgInfo();
         String sniff = p.getString("sniff", null);
         sniffText.setText(sniff == null
@@ -1051,6 +1110,32 @@ public class MainActivity extends Activity {
     private String uiFontLabel() {
         int i = uiFontIdx();
         return i == 0 ? "界面字号：标准" : i == 1 ? "界面字号：大" : "界面字号：特大";
+    }
+
+    private String notifyLabel() {
+        String m = p.getString("wf_notify", "off");
+        return "血糖通知：" + ("off".equals(m) ? "关"
+                : "silent".equals(m) ? "静默（不亮屏）" : "提醒（亮屏）");
+    }
+
+    private String alwaysOnLabel() {
+        return "表盘常亮：" + (p.getBoolean("wf_always_on", false) ? "开" : "关");
+    }
+
+    /** 编辑界面或用户开启「表盘常亮」时才持有屏幕常亮，否则交给系统超时熄屏 */
+    private void updateKeepScreen() {
+        boolean keep = !clockMode || p.getBoolean("wf_always_on", false);
+        if (keep) {
+            getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        } else {
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        }
+    }
+
+    private boolean isInteractive() {
+        android.os.PowerManager pm =
+                (android.os.PowerManager) getSystemService(android.content.Context.POWER_SERVICE);
+        return pm == null || pm.isInteractive();
     }
 
     private String bgModeLabel() {

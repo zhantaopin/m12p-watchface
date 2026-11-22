@@ -41,6 +41,8 @@ public class BgReceiver extends BroadcastReceiver {
             return;
         }
         ed.apply();
+        // 通知随最新数据刷新（静默渠道不会点亮屏幕）
+        NotificationHelper.refresh(context);
         MAIN.post(() -> {
             if (uiRefresh != null) {
                 uiRefresh.run();

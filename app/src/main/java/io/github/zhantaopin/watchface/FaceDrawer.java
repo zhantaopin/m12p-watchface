@@ -46,6 +46,7 @@ public final class FaceDrawer {
     private static final int GREEN = Color.rgb(0, 200, 83);
     private static final int RED = Color.rgb(255, 82, 82);
     private static final int GRAY = Color.rgb(160, 160, 160);
+    private static final int DATE = Color.rgb(204, 204, 204);
     private static final int WHITE = Color.rgb(235, 235, 235);
 
     private FaceDrawer() {
@@ -108,6 +109,12 @@ public final class FaceDrawer {
         return sBg;
     }
 
+    /** 趋势枚举 → 箭头符号，未知返回 ? */
+    public static String arrowText(String name) {
+        String a = ARROWS.get(name);
+        return a != null ? a : "?";
+    }
+
     public static void draw(Canvas c, Context ctx, boolean reserveBottom) {
         SharedPreferences p = ctx.getSharedPreferences("wf", Context.MODE_PRIVATE);
         int w = c.getWidth(), h = c.getHeight();
@@ -156,11 +163,11 @@ public final class FaceDrawer {
         c.drawText(now, w / 2f, timeY, paint);
 
         // ---- 日期 ----
-        paint.setColor(GRAY);
+        paint.setColor(DATE);
         paint.setTypeface(Typeface.DEFAULT);
-        paint.setTextSize(24 * unit);
-        String date = new SimpleDateFormat("MM-dd E", Locale.CHINA).format(new Date());
-        c.drawText(date, w / 2f, timeY + 40 * unit, paint);
+        paint.setTextSize(30 * unit);
+        String date = new SimpleDateFormat("M月d日 E", Locale.CHINA).format(new Date());
+        c.drawText(date, w / 2f, timeY + 46 * unit, paint);
 
         // ---- 血糖块 ----
         float bgY = h * 0.56f;
