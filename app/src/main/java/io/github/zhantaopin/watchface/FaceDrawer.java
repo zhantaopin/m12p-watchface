@@ -68,6 +68,26 @@ public final class FaceDrawer {
         sBgKey = null;
     }
 
+    /** 背景图实际像素尺寸（只读文件头，不解码像素），无背景返回 null */
+    public static int[] bgPixelSize(Context ctx) {
+        String path = ctx.getSharedPreferences("wf", Context.MODE_PRIVATE)
+                .getString("wf_bg", null);
+        if (path == null) {
+            return null;
+        }
+        File f = new File(path);
+        if (!f.exists()) {
+            return null;
+        }
+        BitmapFactory.Options o = new BitmapFactory.Options();
+        o.inJustDecodeBounds = true;
+        BitmapFactory.decodeFile(path, o);
+        if (o.outWidth <= 0 || o.outHeight <= 0) {
+            return null;
+        }
+        return new int[]{o.outWidth, o.outHeight};
+    }
+
     private static Bitmap background(Context ctx, int w, int h) {
         String path = ctx.getSharedPreferences("wf", Context.MODE_PRIVATE)
                 .getString("wf_bg", null);
@@ -96,23 +116,30 @@ public final class FaceDrawer {
 
         Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
-        // 背景：自定义图（铺满裁剪可调位置 / 完整留边，用户可选）或纯黑
+        // 背景：自定义图（铺满裁剪 / 完整留边 / 拉伸铺满）或纯黑
         Bitmap bg = background(ctx, w, h);
         if (bg != null) {
-            boolean cover = "cover".equals(p.getString("wf_bg_mode", "cover"));
-            float s = cover
-                    ? Math.max(w / (float) bg.getWidth(), h / (float) bg.getHeight())
-                    : Math.min(w / (float) bg.getWidth(), h / (float) bg.getHeight());
+            String mode = p.getString("wf_bg_mode", "cover");
             paint.setColor(Color.BLACK);
             c.drawRect(0, 0, w, h, paint);
             paint.setFilterBitmap(true);
-            float offX = (w - bg.getWidth() * s) / 2f;
-            float offY = (h - bg.getHeight() * s) / 2f;
-            if (cover) {
-                offX += p.getFloat("wf_bg_dx", 0f) * w;
-                offY += p.getFloat("wf_bg_dy", 0f) * h;
+            float bw = bg.getWidth(), bh = bg.getHeight();
+            if ("stretch".equals(mode)) {
+                // 拉伸铺满：宽高独立缩放，整张图都在屏内，代价是比例变形
+                c.drawBitmap(bg, null, new RectF(0, 0, w, h), paint);
+            } else {
+                boolean cover = !"contain".equals(mode);
+                float s = cover ? Math.max(w / bw, h / bh) : Math.min(w / bw, h / bh);
+                float dw = bw * s, dh = bh * s;
+                float offX = (w - dw) / 2f;
+                float offY = (h - dh) / 2f;
+                if (cover) {
+                    offX += p.getFloat("wf_bg_dx", 0f) * w;
+                    offY += p.getFloat("wf_bg_dy", 0f) * h;
+                }
+                // 必须按缩放后的目标矩形绘制；此前按原尺寸贴图，导致只显示左上角一块
+                c.drawBitmap(bg, null, new RectF(offX, offY, offX + dw, offY + dh), paint);
             }
-            c.drawBitmap(bg, offX, offY, paint);
             paint.setFilterBitmap(false);
         } else {
             paint.setColor(Color.BLACK);

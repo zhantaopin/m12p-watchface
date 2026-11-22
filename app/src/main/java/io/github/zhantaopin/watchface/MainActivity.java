@@ -63,7 +63,7 @@ public class MainActivity extends Activity {
     /** 抽屉白名单/快捷入口选择模式：0=抽屉 1=快捷入口 */
     private int pickerMode;
     private final List<String> pickedPkgs = new ArrayList<>();
-    private TextView sniffText, srcValue, unitValue, offsetValue, fontValue;
+    private TextView sniffText, srcValue, unitValue, offsetValue, fontValue, bgInfo;
     private Button tabPreview, tabSetting, tabSniff;
     private View previewPage, settingPage, sniffPage;
 
@@ -231,12 +231,17 @@ public class MainActivity extends Activity {
         pv.addView(resetBg, wide());
         Button bgMode = btn(bgModeLabel());
         bgMode.setOnClickListener(v -> {
-            boolean cover = "cover".equals(p.getString("wf_bg_mode", "cover"));
-            p.edit().putString("wf_bg_mode", cover ? "contain" : "cover").apply();
+            String cur = p.getString("wf_bg_mode", "cover");
+            String next = "cover".equals(cur) ? "contain"
+                    : "contain".equals(cur) ? "stretch" : "cover";
+            p.edit().putString("wf_bg_mode", next).apply();
             bgMode.setText(bgModeLabel());
+            updateBgInfo();
             clockView.invalidate();
         });
         pv.addView(bgMode, wide());
+        bgInfo = hint("");
+        pv.addView(bgInfo);
         pv.addView(title("调整背景位置（铺满模式生效）"));
         LinearLayout posRow = new LinearLayout(this);
         posRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -366,6 +371,7 @@ public class MainActivity extends Activity {
         unitValue.setText(mmol ? "mmol/L" : "mg/dL");
         offsetValue.setText(String.format(java.util.Locale.US, "%.2f", p.getFloat("offset", 0f)));
         fontValue.setText(uiFontLabel());
+        updateBgInfo();
         String sniff = p.getString("sniff", null);
         sniffText.setText(sniff == null
                 ? "尚未收到广播\n\n检查：1) AAPS 配置启用 Tizen 同步插件\n2) 或欧态 app 是否在发数据\n收到下一次血糖读数后此页出现原文"
@@ -814,7 +820,9 @@ public class MainActivity extends Activity {
             return;
         }
         java.io.File tmp = new java.io.File(getCacheDir(), "bg_src");
-        try (InputStream in = getContentResolver().openInputStream(data.getData());
+        // 部分精简 ROM 的图库返回的是缩略图 URI，先换成原图 URI 再读
+        Uri srcUri = resolveOriginalUri(data.getData());
+        try (InputStream in = getContentResolver().openInputStream(srcUri);
              FileOutputStream out = new FileOutputStream(tmp)) {
             byte[] buf = new byte[8192];
             int n;
@@ -825,7 +833,7 @@ public class MainActivity extends Activity {
             Toast.makeText(this, "复制图片失败：" + t.getMessage(), Toast.LENGTH_LONG).show();
             return;
         }
-        // 解码 + 应用 EXIF 方向（相机竖拍照片像素为横向存储，需旋转），压缩保存
+        // 解码 + 应用 EXIF 方向（旋转/镜像/转置），压缩保存
         try {
             BitmapFactory.Options bo = new BitmapFactory.Options();
             bo.inJustDecodeBounds = true;
@@ -833,24 +841,13 @@ public class MainActivity extends Activity {
             BitmapFactory.Options b = new BitmapFactory.Options();
             b.inSampleSize = Math.max(1, Math.max(bo.outWidth, bo.outHeight) / 1600);
             android.graphics.Bitmap raw = BitmapFactory.decodeFile(tmp.getAbsolutePath(), b);
-            int rot = 0;
-            try {
-                android.media.ExifInterface ex =
-                        new android.media.ExifInterface(tmp.getAbsolutePath());
-                int o = ex.getAttributeInt(android.media.ExifInterface.TAG_ORIENTATION,
-                        android.media.ExifInterface.ORIENTATION_NORMAL);
-                if (o == android.media.ExifInterface.ORIENTATION_ROTATE_90) {
-                    rot = 90;
-                } else if (o == android.media.ExifInterface.ORIENTATION_ROTATE_180) {
-                    rot = 180;
-                } else if (o == android.media.ExifInterface.ORIENTATION_ROTATE_270) {
-                    rot = 270;
-                }
-            } catch (Throwable ignored) {
+            if (raw == null) {
+                Toast.makeText(this, "无法解码这张图片", Toast.LENGTH_LONG).show();
+                tmp.delete();
+                return;
             }
-            if (rot != 0) {
-                android.graphics.Matrix m = new android.graphics.Matrix();
-                m.postRotate(rot);
+            android.graphics.Matrix m = exifMatrix(tmp);
+            if (m != null) {
                 raw = android.graphics.Bitmap.createBitmap(
                         raw, 0, 0, raw.getWidth(), raw.getHeight(), m, true);
             }
@@ -865,7 +862,76 @@ public class MainActivity extends Activity {
         p.edit().putString("wf_bg", new File(getFilesDir(), "bg.png").getAbsolutePath()).apply();
         FaceDrawer.invalidateBg();
         clockView.invalidate();
-        Toast.makeText(this, "背景已更换", Toast.LENGTH_SHORT).show();
+        updateBgInfo();
+        int[] sz = FaceDrawer.bgPixelSize(this);
+        Toast.makeText(this, sz == null ? "背景已更换"
+                : "背景已更换（" + sz[0] + "×" + sz[1] + "）", Toast.LENGTH_SHORT).show();
+    }
+
+    /** EXIF 方向 → 变换矩阵（旋转 + 镜像 + 转置全量处理），无变换返回 null */
+    private android.graphics.Matrix exifMatrix(File f) {
+        try {
+            android.media.ExifInterface ex = new android.media.ExifInterface(f.getAbsolutePath());
+            int o = ex.getAttributeInt(android.media.ExifInterface.TAG_ORIENTATION,
+                    android.media.ExifInterface.ORIENTATION_NORMAL);
+            android.graphics.Matrix m = new android.graphics.Matrix();
+            switch (o) {
+                case android.media.ExifInterface.ORIENTATION_FLIP_HORIZONTAL:
+                    m.setScale(-1, 1);
+                    return m;
+                case android.media.ExifInterface.ORIENTATION_ROTATE_180:
+                    m.setRotate(180);
+                    return m;
+                case android.media.ExifInterface.ORIENTATION_FLIP_VERTICAL:
+                    m.setRotate(180);
+                    m.postScale(-1, 1);
+                    return m;
+                case android.media.ExifInterface.ORIENTATION_TRANSPOSE:
+                    m.setRotate(90);
+                    m.postScale(-1, 1);
+                    return m;
+                case android.media.ExifInterface.ORIENTATION_ROTATE_90:
+                    m.setRotate(90);
+                    return m;
+                case android.media.ExifInterface.ORIENTATION_TRANSVERSE:
+                    m.setRotate(-90);
+                    m.postScale(-1, 1);
+                    return m;
+                case android.media.ExifInterface.ORIENTATION_ROTATE_270:
+                    m.setRotate(-90);
+                    return m;
+                default:
+                    return null;
+            }
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    /**
+     * 把图库返回的 URI 还原成原图 URI。
+     * 部分精简 ROM 返回 .../images/thumbnails/123（缩略图），直接读会得到裁切/低清图；
+     * 这里按媒体 ID 换成 .../images/media/123 再读。
+     */
+    private Uri resolveOriginalUri(Uri u) {
+        try {
+            if (u == null || !"content".equals(u.getScheme())) {
+                return u;
+            }
+            String path = u.getPath() == null ? "" : u.getPath();
+            String last = u.getLastPathSegment();
+            if (last == null || !path.contains("/images/")) {
+                return u;
+            }
+            if (last.contains(":")) {
+                last = last.substring(last.lastIndexOf(':') + 1);
+            }
+            long id = Long.parseLong(last);
+            return android.content.ContentUris.withAppendedId(
+                    android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id);
+        } catch (Throwable ignored) {
+            return u;
+        }
     }
 
     private void resetBg() {
@@ -873,6 +939,7 @@ public class MainActivity extends Activity {
         p.edit().remove("wf_bg").apply();
         FaceDrawer.invalidateBg();
         clockView.invalidate();
+        updateBgInfo();
         Toast.makeText(this, "已恢复纯黑背景", Toast.LENGTH_SHORT).show();
     }
 
@@ -987,8 +1054,38 @@ public class MainActivity extends Activity {
     }
 
     private String bgModeLabel() {
-        return "cover".equals(p.getString("wf_bg_mode", "cover"))
-                ? "背景显示模式：铺满全屏（裁剪）" : "背景显示模式：完整显示（留边）";
+        String m = p.getString("wf_bg_mode", "cover");
+        String name = "cover".equals(m) ? "铺满全屏（裁剪）"
+                : "contain".equals(m) ? "完整显示（留边）" : "拉伸铺满（变形）";
+        return "背景显示模式：" + name;
+    }
+
+    /** 预览页背景诊断：实际像素尺寸 + 模式 + 缩放比，用于判断选进来的图是否被图库缩成缩略图 */
+    private void updateBgInfo() {
+        if (bgInfo == null) {
+            return;
+        }
+        int[] sz = FaceDrawer.bgPixelSize(this);
+        if (sz == null) {
+            bgInfo.setText("背景：纯黑（未设置图片）");
+            return;
+        }
+        String m = p.getString("wf_bg_mode", "cover");
+        if ("stretch".equals(m)) {
+            bgInfo.setText(String.format(Locale.US, "背景：%d×%d / 拉伸（变形）", sz[0], sz[1]));
+            return;
+        }
+        int w = clockView != null ? clockView.getWidth() : 0;
+        int h = clockView != null ? clockView.getHeight() : 0;
+        if (w <= 0 || h <= 0) {
+            w = getResources().getDisplayMetrics().widthPixels;
+            h = getResources().getDisplayMetrics().heightPixels;
+        }
+        float s = "cover".equals(m)
+                ? Math.max(w / (float) sz[0], h / (float) sz[1])
+                : Math.min(w / (float) sz[0], h / (float) sz[1]);
+        bgInfo.setText(String.format(Locale.US, "背景：%d×%d / %s / 缩放 %.2f",
+                sz[0], sz[1], "cover".equals(m) ? "铺满" : "完整", s));
     }
 
     private int dp(int v) {
