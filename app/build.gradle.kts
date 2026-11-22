@@ -17,8 +17,8 @@ android {
         applicationId = "io.github.zhantaopin.watchface"
         minSdk = 27
         targetSdk = 27
-        versionCode = 14
-        versionName = "2.1"
+        versionCode = 15
+        versionName = "2.2"
     }
 
     signingConfigs {

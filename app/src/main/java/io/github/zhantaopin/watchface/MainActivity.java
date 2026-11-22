@@ -216,7 +216,7 @@ public class MainActivity extends Activity {
 
         // 右上角菜单按钮，始终可见
         Button menu = btn(clockMode ? "≡" : "×");
-        menu.setTextSize(18);
+        menu.setTextSize(20);
         FrameLayout.LayoutParams mp = new FrameLayout.LayoutParams(dp(40), dp(40));
         mp.gravity = Gravity.TOP | Gravity.END;
         mp.setMargins(0, dp(4), dp(4), 0);
@@ -232,7 +232,7 @@ public class MainActivity extends Activity {
             clockMode = !clockMode;
             ((Button) v).setText(clockMode ? "≡" : "×");
             mainBox.setVisibility(clockMode ? View.GONE : View.VISIBLE);
-            dock.setVisibility(clockMode ? View.VISIBLE : View.GONE);
+            updateDockVisibility();
             updateKeepScreen();
             applyImmersive();
             refreshAll();
@@ -404,7 +404,7 @@ public class MainActivity extends Activity {
         sn.setOrientation(LinearLayout.VERTICAL);
         sniffText = new TextView(this);
         sniffText.setTextColor(Color.rgb(220, 220, 220));
-        sniffText.setTextSize(11 * uiFont());
+        sniffText.setTextSize(12 * uiFont());
         sniffText.setTypeface(Typeface.MONOSPACE);
         sniffText.setPadding(dp(6), dp(8), dp(6), dp(8));
         sn.addView(sniffText, new LinearLayout.LayoutParams(
@@ -490,6 +490,14 @@ public class MainActivity extends Activity {
         if (page == 1) {
             rebuildDrawerPage();
         }
+        updateDockVisibility();
+    }
+
+    /** 快捷入口只在表盘页显示，避免压住应用九宫格 */
+    private void updateDockVisibility() {
+        int pw = getResources().getDisplayMetrics().widthPixels;
+        boolean clockPage = pager == null || pager.getScrollX() <= pw / 2;
+        dock.setVisibility(clockMode && clockPage ? View.VISIBLE : View.GONE);
     }
 
     /** 背景显示位置微调（铺满模式生效），范围 ±0.4 屏宽/屏高，步进 0.05 */
@@ -528,8 +536,8 @@ public class MainActivity extends Activity {
             TextView t = new TextView(this);
             t.setText(e[0]);
             t.setTextColor(Color.rgb(210, 210, 210));
-            t.setTextSize(13);
-            t.setPadding(dp(12), dp(8), dp(12), dp(8));
+            t.setTextSize(15);
+            t.setPadding(dp(12), dp(10), dp(12), dp(10));
             // 半透明底衬，浅色表盘/背景图上也能看清
             android.graphics.drawable.GradientDrawable chip =
                     new android.graphics.drawable.GradientDrawable();
@@ -608,9 +616,9 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** 可启动应用列表：排除自身，应用白名单过滤，按中文名排序 */
+    /** 可启动应用列表：排除自身，应用白名单过滤，去重后按中文名排序 */
     private List<AppInfo> loadApps(boolean applyWhitelist) {
-        List<AppInfo> out = new ArrayList<>();
+        List<AppInfo> raw = new ArrayList<>();
         android.content.pm.PackageManager pm = getPackageManager();
         Intent q = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER);
         Set<String> white = p.getStringSet("wf_drawer_apps", null);
@@ -627,7 +635,26 @@ public class MainActivity extends Activity {
                 icon = ri.loadIcon(pm);
             } catch (Throwable ignored) {
             }
-            out.add(new AppInfo(ri.loadLabel(pm).toString(), pk, icon));
+            raw.add(new AppInfo(ri.loadLabel(pm).toString(), pk, icon));
+        }
+        // 去重：同包多入口只留一个；同名不同包也只留一个（优先系统设置）
+        List<AppInfo> out = new ArrayList<>();
+        for (AppInfo ai : raw) {
+            int same = -1;
+            for (int i = 0; i < out.size(); i++) {
+                AppInfo e = out.get(i);
+                if (e.pkg.equals(ai.pkg)
+                        || e.label.trim().equalsIgnoreCase(ai.label.trim())) {
+                    same = i;
+                    break;
+                }
+            }
+            if (same < 0) {
+                out.add(ai);
+            } else if ("com.android.settings".equals(ai.pkg)
+                    && !"com.android.settings".equals(out.get(same).pkg)) {
+                out.set(same, ai);
+            }
         }
         Collator col = Collator.getInstance(Locale.CHINA);
         Collections.sort(out, (a, b) -> col.compare(a.label, b.label));
@@ -656,7 +683,7 @@ public class MainActivity extends Activity {
         TextView head = new TextView(this);
         head.setText("全部应用（左右拖动切换屏幕）");
         head.setTextColor(Color.rgb(130, 130, 130));
-        head.setTextSize(13);
+        head.setTextSize(14 * uiFont());
         head.setGravity(Gravity.CENTER);
         drawerList.addView(head, wide());
 
@@ -675,7 +702,7 @@ public class MainActivity extends Activity {
             TextView tv = new TextView(this);
             tv.setText(ai.label);
             tv.setTextColor(Color.rgb(205, 205, 205));
-            tv.setTextSize(15);
+            tv.setTextSize(17 * uiFont());
             tv.setGravity(Gravity.CENTER);
             tv.setMaxLines(2);
             tv.setEllipsize(android.text.TextUtils.TruncateAt.END);
@@ -782,7 +809,7 @@ public class MainActivity extends Activity {
         box.setPadding(dp(8), dp(44), dp(8), dp(8));
         pickerTitle = new TextView(this);
         pickerTitle.setTextColor(Color.WHITE);
-        pickerTitle.setTextSize(15 * uiFont());
+        pickerTitle.setTextSize(16 * uiFont());
         pickerTitle.setPadding(0, 0, 0, dp(6));
         box.addView(pickerTitle);
         ScrollView sv = new ScrollView(this);
@@ -841,7 +868,7 @@ public class MainActivity extends Activity {
         TextView name = new TextView(this);
         name.setText(label);
         name.setTextColor(Color.rgb(210, 210, 210));
-        name.setTextSize(13 * uiFont());
+        name.setTextSize(15 * uiFont());
         name.setPadding(dp(6), dp(8), dp(4), dp(8));
         CheckBox cb = new CheckBox(this);
         cb.setChecked(pickedPkgs.contains(pkg));
@@ -885,7 +912,7 @@ public class MainActivity extends Activity {
     private void closePicker() {
         pickerBox.setVisibility(View.GONE);
         mainBox.setVisibility(clockMode ? View.GONE : View.VISIBLE);
-        dock.setVisibility(clockMode ? View.VISIBLE : View.GONE);
+        updateDockVisibility();
     }
 
     // ---------------- 表盘样式 ----------------
@@ -902,7 +929,7 @@ public class MainActivity extends Activity {
         TextView t = new TextView(this);
         t.setText("选择表盘样式");
         t.setTextColor(Color.WHITE);
-        t.setTextSize(15 * uiFont());
+        t.setTextSize(16 * uiFont());
         t.setPadding(0, 0, 0, dp(6));
         box.addView(t);
         ScrollView sv = new ScrollView(this);
@@ -927,7 +954,7 @@ public class MainActivity extends Activity {
     private void closeStyleBox() {
         styleBox.setVisibility(View.GONE);
         mainBox.setVisibility(clockMode ? View.GONE : View.VISIBLE);
-        dock.setVisibility(clockMode ? View.VISIBLE : View.GONE);
+        updateDockVisibility();
     }
 
     /** 12 套样式两列网格，缩略图由 FaceDrawer 用同一渲染器绘制 */
@@ -944,7 +971,7 @@ public class MainActivity extends Activity {
                     new LinearLayout.LayoutParams(dp(86), dp(105)));
             TextView name = new TextView(this);
             name.setText(st.name);
-            name.setTextSize(11 * uiFont());
+            name.setTextSize(12 * uiFont());
             name.setTextColor(st.id.equals(FaceStyle.current(p).id)
                     ? Color.rgb(76, 175, 80) : Color.rgb(170, 170, 170));
             name.setPadding(0, dp(4), 0, 0);
@@ -1206,11 +1233,11 @@ public class MainActivity extends Activity {
     private Button btn(String text) {
         Button b = new Button(this);
         b.setText(text);
-        b.setTextSize(13 * uiFont());
+        b.setTextSize(16 * uiFont());
         b.setAllCaps(false);
-        b.setMinHeight(0);
-        b.setMinimumHeight(0);
-        b.setPadding(dp(4), dp(4), dp(4), dp(4));
+        b.setMinHeight(dp(44));
+        b.setMinimumHeight(dp(44));
+        b.setPadding(dp(6), dp(6), dp(6), dp(6));
         return b;
     }
 
@@ -1218,7 +1245,7 @@ public class MainActivity extends Activity {
         TextView t = new TextView(this);
         t.setText(text);
         t.setTextColor(Color.GRAY);
-        t.setTextSize(12 * uiFont());
+        t.setTextSize(14 * uiFont());
         t.setPadding(0, dp(10), 0, dp(2));
         return t;
     }
@@ -1227,7 +1254,7 @@ public class MainActivity extends Activity {
         TextView t = new TextView(this);
         t.setText(text);
         t.setTextColor(Color.rgb(120, 120, 120));
-        t.setTextSize(10 * uiFont());
+        t.setTextSize(12 * uiFont());
         t.setPadding(0, dp(4), 0, 0);
         return t;
     }
