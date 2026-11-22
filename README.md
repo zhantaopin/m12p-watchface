@@ -1,6 +1,6 @@
-# M12P Watchface
+# 控糖表盘（M12P Watchface）
 
-面向华强北 M12P（368×448、Android 8.1、无 Wear OS/GMS）等小屏安卓手表的**血糖表盘桌面**。以 HOME 桌面身份运行，通过广播从 AndroidAPS 或欧态（OTTAI）app 实时获取血糖数据，直接显示在表盘上。
+**控糖表盘**是一款面向华强北 M12P（368×448、Android 8.1、无 Wear OS/GMS）等小屏安卓手表的**血糖表盘桌面**。以 HOME 桌面身份运行，通过广播从 AndroidAPS 或欧态（OTTAI）app 实时获取血糖数据，直接显示在表盘上。
 
 English users: see [License](#许可证license) — noncommercial use is free; commercial use requires the author's written permission (contact: 462531904@qq.com).
 
@@ -10,7 +10,8 @@ English users: see [License](#许可证license) — noncommercial use is free; c
 
 ## 功能
 
-- **表盘**：大号时间/日期、血糖值 + 趋势箭头 + 时效 + delta、IOB/COB、手表电量、数据源角标；血糖高于/低于阈值自动变红
+- **表盘**：大号时间/日期、血糖值 + 趋势箭头 + 时效 + delta、IOB/COB、底部电池百分比；血糖高于/低于阈值自动变红
+- **12 套表盘样式**：纵向 / 双栏 / 圆环 3 种布局 × 深空黑 / 石墨灰 / 奶白 / 夜光绿 4 套配色，设置页缩略图一键切换
 - **双屏横向翻页**：表盘 ↔ 应用列表（九宫格），跟手拖动、松手吸附，替代传统抽屉
 - **数据源**：
   - `AAPS`：手表版 AndroidAPS 启用 Tizen 同步插件后发出的状态广播
@@ -27,7 +28,7 @@ English users: see [License](#许可证license) — noncommercial use is free; c
 
 1. 从 [Releases](https://github.com/zhantaopin/m12p-watchface/releases) 下载最新 APK
 2. `adb install -r watchface-x.x-debug.apk`，或将 APK 放入手表可访问的下载地址，手表浏览器下载安装
-3. 打开「表盘」app → 预览页点「设为主屏幕（桌面模式）」，或按 Home 键在弹出的选择框中选择「表盘」并勾选始终
+3. 打开「控糖表盘」app → 预览页点「设为主屏幕（桌面模式）」，或按 Home 键在弹出的选择框中选择「控糖表盘」并勾选始终
 
 ## 数据源配置
 

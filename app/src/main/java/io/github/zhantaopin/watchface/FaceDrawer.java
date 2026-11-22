@@ -14,7 +14,6 @@ import android.graphics.Typeface;
 import android.os.BatteryManager;
 
 import java.io.File;
-
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.HashMap;
@@ -22,8 +21,8 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * 表盘绘制：黑底、大号时间、日期、血糖块（值/箭头/时效/delta）、IOB/COB、电量。
- * 适配任意尺寸（按画布宽缩放），设计基准 368x448。
+ * 表盘绘制：按 {@link FaceStyle} 输出 3 种布局（纵向 / 双栏 / 圆环）× 4 套配色。
+ * 适配任意尺寸（按画布短边缩放），设计基准 368x448。
  */
 public final class FaceDrawer {
 
@@ -42,12 +41,6 @@ public final class FaceDrawer {
         ARROWS.put("TripleDown", "↓↓");
         ARROWS.put("NONE", "?");
     }
-
-    private static final int GREEN = Color.rgb(0, 200, 83);
-    private static final int RED = Color.rgb(255, 82, 82);
-    private static final int GRAY = Color.rgb(160, 160, 160);
-    private static final int DATE = Color.rgb(204, 204, 204);
-    private static final int WHITE = Color.rgb(235, 235, 235);
 
     private FaceDrawer() {
     }
@@ -89,7 +82,7 @@ public final class FaceDrawer {
         return new int[]{o.outWidth, o.outHeight};
     }
 
-    private static Bitmap background(Context ctx, int w, int h) {
+    private static Bitmap background(Context ctx) {
         String path = ctx.getSharedPreferences("wf", Context.MODE_PRIVATE)
                 .getString("wf_bg", null);
         if (path == null) {
@@ -115,16 +108,217 @@ public final class FaceDrawer {
         return a != null ? a : "?";
     }
 
+    /** 桌面时钟：读真实数据按当前样式绘制（reserveBottom=true 时给底部快捷入口留位置） */
     public static void draw(Canvas c, Context ctx, boolean reserveBottom) {
         SharedPreferences p = ctx.getSharedPreferences("wf", Context.MODE_PRIVATE);
+        FaceStyle style = FaceStyle.current(p);
         int w = c.getWidth(), h = c.getHeight();
-        float unit = Math.min(w, h) / 448f; // 缩放基准
-        boolean hideBg = p.getBoolean("wf_bg_hide", false); // 血糖隐私隐藏
-
+        float u = Math.min(w, h) / 448f;
         Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        drawBackground(c, ctx, p, style, w, h, paint);
+        sEyeRect.setEmpty();
+        render(c, paint, style, Data.load(p, battery(ctx)), w, h, u, reserveBottom, false);
+    }
 
-        // 背景：自定义图（铺满裁剪 / 完整留边 / 拉伸铺满）或纯黑
-        Bitmap bg = background(ctx, w, h);
+    /** 样式选择页缩略图：固定样例数据、不读背景图 */
+    public static void drawPreview(Canvas c, FaceStyle style) {
+        int w = c.getWidth(), h = c.getHeight();
+        float u = Math.min(w, h) / 448f;
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        paint.setColor(style.bg);
+        c.drawRect(0, 0, w, h, paint);
+        render(c, paint, style, Data.sample(), w, h, u, false, true);
+    }
+
+    private static void render(Canvas c, Paint p, FaceStyle s, Data d,
+                               int w, int h, float u, boolean reserveBottom, boolean preview) {
+        if (s.layout == FaceStyle.LAYOUT_B) {
+            layoutB(c, p, s, d, w, h, u, preview);
+        } else if (s.layout == FaceStyle.LAYOUT_C) {
+            layoutC(c, p, s, d, w, h, u, reserveBottom, preview);
+        } else {
+            layoutA(c, p, s, d, w, h, u, reserveBottom, preview);
+        }
+    }
+
+    // ---------------- 三种布局 ----------------
+
+    /** A 纵向三段：时间在上、血糖居中、电量底部居中 */
+    private static void layoutA(Canvas c, Paint p, FaceStyle s, Data d,
+                                int w, int h, float u, boolean reserveBottom, boolean preview) {
+        float cx = w / 2f;
+        float timeY = h * 0.24f;
+        txt(c, p, d.time, cx, timeY, 96 * u, s.fg, true, Paint.Align.CENTER);
+        txt(c, p, d.date, cx, timeY + 46 * u, 32 * u, s.sub, false, Paint.Align.CENTER);
+
+        float bgY = h * 0.56f;
+        drawGlucose(c, p, s, d, w, cx, bgY, u, preview, 84);
+        drawGlucoseMeta(c, p, s, d, cx, bgY, u, 24, 20, true);
+
+        float by = reserveBottom ? h - 66 * u : h - 24 * u;
+        drawBattery(c, p, cx, by, u, d.battery, batteryColor(s, d), 24 * u, Paint.Align.CENTER);
+    }
+
+    /** B 双栏卡片：时间左上、电量右上、分割线、血糖主区、IOB/COB 底部左右 */
+    private static void layoutB(Canvas c, Paint p, FaceStyle s, Data d,
+                                int w, int h, float u, boolean preview) {
+        float left = 24 * u;
+        float timeY = h * 0.20f;
+        txt(c, p, d.time, left, timeY, 72 * u, s.fg, true, Paint.Align.LEFT);
+        txt(c, p, d.date, left, timeY + 30 * u, 24 * u, s.sub, false, Paint.Align.LEFT);
+        drawBattery(c, p, w - 20 * u, h * 0.155f, u, d.battery,
+                batteryColor(s, d), 22 * u, Paint.Align.RIGHT);
+
+        // 分割线
+        p.setStyle(Paint.Style.STROKE);
+        p.setStrokeWidth(Math.max(1f, 1.5f * u));
+        p.setColor(withAlpha(s.meta, 90));
+        c.drawLine(20 * u, h * 0.31f, w - 20 * u, h * 0.31f, p);
+        p.setStyle(Paint.Style.FILL);
+
+        float bgY = h * 0.56f;
+        drawGlucose(c, p, s, d, w, w / 2f, bgY, u, preview, 84);
+        // IOB/COB 已在底部左右分列，这里只画时效/Delta
+        drawGlucoseMeta(c, p, s, d, w / 2f, bgY, u, 22, 18, false);
+
+        // IOB / COB 底部左右分列
+        float metaY = h * 0.83f;
+        if (d.iobText != null && d.cobText != null) {
+            txt(c, p, d.iobText, w * 0.26f, metaY, 22 * u, s.meta, false, Paint.Align.CENTER);
+            txt(c, p, d.cobText, w * 0.74f, metaY, 22 * u, s.meta, false, Paint.Align.CENTER);
+        } else if (d.iobText != null || d.cobText != null) {
+            txt(c, p, d.iobText != null ? d.iobText : d.cobText,
+                    w / 2f, metaY, 22 * u, s.meta, false, Paint.Align.CENTER);
+        }
+    }
+
+    /** C 圆环聚焦：时间收进顶部圆环，血糖在环下，电量底部居中 */
+    private static void layoutC(Canvas c, Paint p, FaceStyle s, Data d,
+                                int w, int h, float u, boolean reserveBottom, boolean preview) {
+        float cx = w / 2f;
+        float cy = h * 0.22f;
+        float r = 104 * u;
+
+        p.setStyle(Paint.Style.STROKE);
+        p.setStrokeWidth(Math.max(1f, 2.5f * u));
+        p.setColor(s.fg);
+        c.drawCircle(cx, cy, r, p);
+
+        // 12 个刻度，12 点位置用主色点缀
+        p.setStrokeWidth(Math.max(1f, 2f * u));
+        for (int i = 0; i < 12; i++) {
+            double a = Math.toRadians(i * 30.0);
+            float cos = (float) Math.cos(a), sin = (float) Math.sin(a);
+            p.setColor(i == 0 ? s.good : withAlpha(s.sub, 150));
+            c.drawLine(cx + cos * r, cy + sin * r,
+                    cx + cos * (r - 6 * u), cy + sin * (r - 6 * u), p);
+        }
+        p.setStyle(Paint.Style.FILL);
+
+        txt(c, p, d.time, cx, cy + 22 * u, 60 * u, s.fg, true, Paint.Align.CENTER);
+        txt(c, p, d.date, cx, cy + 44 * u, 20 * u, s.sub, false, Paint.Align.CENTER);
+
+        float bgY = h * 0.56f;
+        drawGlucose(c, p, s, d, w, cx, bgY, u, preview, 84);
+        drawGlucoseMeta(c, p, s, d, cx, bgY, u, 22, 18, true);
+
+        float by = reserveBottom ? h - 66 * u : h - 24 * u;
+        drawBattery(c, p, cx, by, u, d.battery, batteryColor(s, d), 22 * u, Paint.Align.CENTER);
+    }
+
+    // ---------------- 绘制部件 ----------------
+
+    /** 血糖大字（含眼睛图标与隐私隐藏） */
+    private static void drawGlucose(Canvas c, Paint p, FaceStyle s, Data d,
+                                    float w, float cx, float bgY, float u, boolean preview,
+                                    float valueSize) {
+        if (!d.hasBg) {
+            txt(c, p, "未收到血糖", cx, bgY, 28 * u, s.meta, false, Paint.Align.CENTER);
+            return;
+        }
+        drawEye(c, w, bgY, u, d.hidden, s.meta, preview);
+        if (d.hidden) {
+            return;
+        }
+        txt(c, p, d.valueText(), cx, bgY, valueSize * u, d.valueColor(s),
+                true, Paint.Align.CENTER);
+    }
+
+    /** 血糖下方的时效 / Delta / IOB / COB */
+    private static void drawGlucoseMeta(Canvas c, Paint p, FaceStyle s, Data d,
+                                        float cx, float bgY, float u,
+                                        float line2Size, float iobSize, boolean showIob) {
+        if (!d.hasBg || d.hidden) {
+            return;
+        }
+        txt(c, p, d.line2(), cx, bgY + 38 * u, line2Size * u, s.meta,
+                false, Paint.Align.CENTER);
+        if (showIob && d.iobCob() != null) {
+            txt(c, p, d.iobCob(), cx, bgY + 68 * u, iobSize * u, s.meta,
+                    false, Paint.Align.CENTER);
+        }
+    }
+
+    /** 眼睛图标：血糖块右上角，点击隐藏/显示血糖（闭眼态加斜线） */
+    private static void drawEye(Canvas c, float w, float bgY, float u,
+                                boolean hidden, int color, boolean preview) {
+        float ew = 40 * u, eh = 28 * u;
+        float left = w - 14 * u - ew, top = bgY - 54 * u;
+        if (!preview) {
+            sEyeRect.set(left, top, left + ew, top + eh);
+        }
+        Paint ep = new Paint(Paint.ANTI_ALIAS_FLAG);
+        ep.setColor(color);
+        ep.setStyle(Paint.Style.STROKE);
+        ep.setStrokeWidth(3 * u);
+        c.drawOval(new RectF(left, top, left + ew, top + eh), ep);
+        ep.setStyle(Paint.Style.FILL);
+        c.drawCircle(left + ew / 2f, top + eh / 2f, 5 * u, ep);
+        if (hidden) {
+            ep.setStyle(Paint.Style.STROKE);
+            c.drawLine(left - 2 * u, top + eh + 2 * u,
+                    left + ew + 2 * u, top - 2 * u, ep);
+        }
+    }
+
+    /** 电池图标 + 百分比；align 决定整组相对 anchorX 的对齐方式 */
+    private static void drawBattery(Canvas c, Paint p, float anchorX, float baseline, float u,
+                                    int pct, int color, float fontSize, Paint.Align align) {
+        String label = pct >= 0 ? pct + "%" : "?";
+        p.setTextSize(fontSize);
+        p.setTypeface(Typeface.DEFAULT);
+        float tw = p.measureText(label);
+        float ih = fontSize * 0.62f;
+        float iw = ih * 2.05f;
+        float gap = fontSize * 0.3f;
+        float cap = ih * 0.14f;
+        float gw = iw + cap + gap + tw;
+        float left = align == Paint.Align.CENTER ? anchorX - gw / 2f
+                : align == Paint.Align.RIGHT ? anchorX - gw : anchorX;
+        float top = baseline - fontSize * 0.72f;
+
+        p.setColor(color);
+        p.setStyle(Paint.Style.STROKE);
+        p.setStrokeWidth(Math.max(1f, 1.5f * u));
+        float bodyRight = left + iw;
+        c.drawRoundRect(new RectF(left, top, bodyRight, top + ih), ih * 0.25f, ih * 0.25f, p);
+        c.drawRect(bodyRight, top + ih * 0.28f, bodyRight + cap, top + ih * 0.72f, p);
+
+        if (pct > 0) {
+            float pad = Math.max(1f, 1.2f * u);
+            float fw = (iw - pad * 2) * Math.min(100, pct) / 100f;
+            p.setStyle(Paint.Style.FILL);
+            c.drawRect(left + pad, top + pad, left + pad + fw, top + ih - pad, p);
+        }
+        p.setStyle(Paint.Style.FILL);
+        p.setTextAlign(Paint.Align.LEFT);
+        c.drawText(label, bodyRight + cap + gap, baseline, p);
+    }
+
+    private static void drawBackground(Canvas c, Context ctx, SharedPreferences p,
+                                       FaceStyle style, int w, int h, Paint paint) {
+        Bitmap bg = background(ctx);
+        paint.setStyle(Paint.Style.FILL);
         if (bg != null) {
             String mode = p.getString("wf_bg_mode", "cover");
             paint.setColor(Color.BLACK);
@@ -149,123 +343,28 @@ public final class FaceDrawer {
             }
             paint.setFilterBitmap(false);
         } else {
-            paint.setColor(Color.BLACK);
+            paint.setColor(style.bg);
             c.drawRect(0, 0, w, h, paint);
         }
-
-        // ---- 时间 ----
-        String now = new SimpleDateFormat("HH:mm", Locale.getDefault()).format(new Date());
-        paint.setColor(WHITE);
-        paint.setTypeface(Typeface.DEFAULT_BOLD);
-        paint.setTextSize(96 * unit);
-        paint.setTextAlign(Paint.Align.CENTER);
-        float timeY = h * 0.24f;
-        c.drawText(now, w / 2f, timeY, paint);
-
-        // ---- 日期 ----
-        paint.setColor(DATE);
-        paint.setTypeface(Typeface.DEFAULT);
-        paint.setTextSize(30 * unit);
-        String date = new SimpleDateFormat("M月d日 E", Locale.CHINA).format(new Date());
-        c.drawText(date, w / 2f, timeY + 46 * unit, paint);
-
-        // ---- 血糖块 ----
-        float bgY = h * 0.56f;
-        boolean hasBg = p.contains("bg_mgdl");
-        if (!hasBg) {
-            paint.setColor(GRAY);
-            paint.setTextSize(28 * unit);
-            c.drawText("未收到血糖", w / 2f, bgY, paint);
-        } else {
-            drawEye(c, w, bgY, unit, hideBg);
-            if (!hideBg) {
-                double mgdl = p.getFloat("bg_mgdl", 0);
-                boolean mmol = "mmol".equals(p.getString("unit", "mmol"));
-                float offsetMmol = p.getFloat("offset", 0f);
-                boolean fromAaps = "aaps".equals(p.getString("bg_src", "aaps"));
-                // AAPS 源已含偏移；欧态源叠加用户偏移
-                double effMgdl = fromAaps ? mgdl : mgdl + offsetMmol * 18.0;
-                double shown = mmol ? effMgdl / 18.0 : effMgdl;
-
-                double mmolVal = effMgdl / 18.0;
-                int color = (mmolVal < 3.9 || mmolVal > 13.9) ? RED : GREEN;
-
-                String arrow = ARROWS.containsKey(p.getString("bg_arrow", "NONE"))
-                        ? ARROWS.get(p.getString("bg_arrow", "NONE")) : "?";
-
-                paint.setColor(color);
-                paint.setTypeface(Typeface.DEFAULT_BOLD);
-                paint.setTextSize(84 * unit);
-                String valText = (mmol ? String.format(Locale.US, "%.1f", shown)
-                        : String.valueOf((int) Math.round(shown))) + " " + arrow;
-                c.drawText(valText, w / 2f, bgY, paint);
-
-                // 时效 + delta
-                long ageMin = (System.currentTimeMillis() - p.getLong("bg_time", 0)) / 60000L;
-                String line2;
-                if (p.getBoolean("bg_has_delta", false)) {
-                    double deltaMgdl = p.getFloat("bg_delta", 0) + (fromAaps ? 0 : offsetMmol * 18);
-                    String d = mmol ? String.format(Locale.US, "%+.1f", deltaMgdl / 18.0)
-                            : String.format(Locale.US, "%+.0f", deltaMgdl);
-                    line2 = d + "  " + ageMin + "分钟前";
-                } else {
-                    line2 = ageMin + "分钟前";
-                }
-                paint.setColor(GRAY);
-                paint.setTypeface(Typeface.DEFAULT);
-                paint.setTextSize(24 * unit);
-                c.drawText(line2, w / 2f, bgY + 38 * unit, paint);
-
-                // IOB/COB
-                float iob = p.getFloat("iob", -1);
-                float cob = p.getFloat("cob", -1);
-                if (iob >= 0 || cob >= 0) {
-                    StringBuilder sb = new StringBuilder();
-                    if (iob >= 0) {
-                        sb.append("IOB ").append(String.format(Locale.US, "%.1fU", iob));
-                    }
-                    if (cob >= 0) {
-                        if (sb.length() > 0) {
-                            sb.append("  ");
-                        }
-                        sb.append("COB ").append(String.format(Locale.US, "%.0fg", cob));
-                    }
-                    paint.setTextSize(24 * unit);
-                    c.drawText(sb.toString(), w / 2f, bgY + 68 * unit, paint);
-                }
-            }
-        }
-
-        // ---- 电量 ----
-        float footY = reserveBottom ? h - 72 * unit : h - 16 * unit;
-        int batt = battery(ctx);
-        paint.setColor(GRAY);
-        paint.setTextSize(20 * unit);
-        paint.setTextAlign(Paint.Align.LEFT);
-        c.drawText("电量 " + (batt >= 0 ? batt + "%" : "?"), 16 * unit, footY, paint);
-
-        // ---- 数据源 ----
-        paint.setTextAlign(Paint.Align.RIGHT);
-        c.drawText(p.getString("bg_src", "aaps"), w - 16 * unit, footY, paint);
     }
 
-    /** 眼睛图标：血糖块右上角，点击隐藏/显示血糖（闭眼态加斜线） */
-    private static void drawEye(Canvas c, int w, float bgY, float unit, boolean hidden) {
-        float ew = 40 * unit, eh = 28 * unit;
-        sEyeRect.set(w - 14 * unit - ew, bgY - 54 * unit,
-                w - 14 * unit, bgY - 54 * unit + eh);
-        Paint ep = new Paint(Paint.ANTI_ALIAS_FLAG);
-        ep.setColor(hidden ? GRAY : Color.rgb(200, 200, 200));
-        ep.setStyle(Paint.Style.STROKE);
-        ep.setStrokeWidth(3 * unit);
-        c.drawOval(sEyeRect, ep);
-        ep.setStyle(Paint.Style.FILL);
-        c.drawCircle(sEyeRect.centerX(), sEyeRect.centerY(), 5 * unit, ep);
-        if (hidden) {
-            ep.setStyle(Paint.Style.STROKE);
-            c.drawLine(sEyeRect.left - 2 * unit, sEyeRect.bottom + 2 * unit,
-                    sEyeRect.right + 2 * unit, sEyeRect.top - 2 * unit, ep);
-        }
+    // ---------------- 工具 ----------------
+
+    private static void txt(Canvas c, Paint p, String s, float x, float y, float size,
+                            int color, boolean bold, Paint.Align align) {
+        p.setColor(color);
+        p.setTypeface(bold ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
+        p.setTextSize(size);
+        p.setTextAlign(align);
+        c.drawText(s, x, y, p);
+    }
+
+    private static int withAlpha(int color, int alpha) {
+        return (color & 0x00FFFFFF) | (alpha << 24);
+    }
+
+    private static int batteryColor(FaceStyle s, Data d) {
+        return d.battery >= 0 && d.battery < 20 ? s.bad : s.meta;
     }
 
     private static int battery(Context ctx) {
@@ -279,6 +378,94 @@ public final class FaceDrawer {
             return level >= 0 && scale > 0 ? level * 100 / scale : -1;
         } catch (Throwable t) {
             return -1;
+        }
+    }
+
+    /** 一次绘制所需的数据快照（真实数据或缩略图样例） */
+    private static final class Data {
+        String time, date, arrow;
+        boolean hasBg, hidden, mmol, hasDelta;
+        double mmolValue, shown;
+        long ageMin;
+        String deltaText;
+        String iobText, cobText;
+        int battery;
+
+        static Data load(SharedPreferences p, int battery) {
+            Data d = new Data();
+            Date now = new Date();
+            d.time = new SimpleDateFormat("HH:mm", Locale.getDefault()).format(now);
+            d.date = new SimpleDateFormat("M月d日 E", Locale.CHINA).format(now);
+            d.battery = battery;
+            d.hidden = p.getBoolean("wf_bg_hide", false);
+            d.hasBg = p.contains("bg_mgdl");
+            if (!d.hasBg) {
+                return d;
+            }
+            double mgdl = p.getFloat("bg_mgdl", 0);
+            boolean fromAaps = "aaps".equals(p.getString("bg_src", "aaps"));
+            float offsetMmol = p.getFloat("offset", 0f);
+            // AAPS 源已含偏移；欧态源叠加用户偏移
+            double effMgdl = fromAaps ? mgdl : mgdl + offsetMmol * 18.0;
+            d.mmolValue = effMgdl / 18.0;
+            d.mmol = "mmol".equals(p.getString("unit", "mmol"));
+            d.shown = d.mmol ? d.mmolValue : effMgdl;
+            d.arrow = arrowText(p.getString("bg_arrow", "NONE"));
+            d.ageMin = (System.currentTimeMillis() - p.getLong("bg_time", 0)) / 60000L;
+            d.hasDelta = p.getBoolean("bg_has_delta", false);
+            if (d.hasDelta) {
+                double deltaMgdl = p.getFloat("bg_delta", 0) + (fromAaps ? 0 : offsetMmol * 18);
+                d.deltaText = d.mmol
+                        ? String.format(Locale.US, "%+.1f", deltaMgdl / 18.0)
+                        : String.format(Locale.US, "%+.0f", deltaMgdl);
+            }
+            float iob = p.getFloat("iob", -1);
+            float cob = p.getFloat("cob", -1);
+            if (iob >= 0) {
+                d.iobText = "IOB " + String.format(Locale.US, "%.1fU", iob);
+            }
+            if (cob >= 0) {
+                d.cobText = "COB " + String.format(Locale.US, "%.0fg", cob);
+            }
+            return d;
+        }
+
+        static Data sample() {
+            Data d = new Data();
+            d.time = "19:52";
+            d.date = "11月22日 周日";
+            d.hasBg = true;
+            d.mmol = true;
+            d.mmolValue = 6.4;
+            d.shown = 6.4;
+            d.arrow = "↑";
+            d.hasDelta = true;
+            d.deltaText = "+0.3";
+            d.ageMin = 12;
+            d.iobText = "IOB 1.2U";
+            d.cobText = "COB 15g";
+            d.battery = 78;
+            return d;
+        }
+
+        String valueText() {
+            return (mmol ? String.format(Locale.US, "%.1f", shown)
+                    : String.valueOf((int) Math.round(shown))) + " " + arrow;
+        }
+
+        int valueColor(FaceStyle s) {
+            return mmolValue < 3.9 || mmolValue > 13.9 ? s.bad : s.good;
+        }
+
+        String line2() {
+            return hasDelta ? deltaText + "  " + ageMin + "分钟前" : ageMin + "分钟前";
+        }
+
+        String iobCob() {
+            if (iobText == null) {
+                return cobText;
+            }
+            return cobText == null ? iobText : iobText + "  " + cobText;
         }
     }
 }

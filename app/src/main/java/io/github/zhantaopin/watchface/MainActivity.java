@@ -5,7 +5,11 @@ import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.Path;
+import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
 import android.net.Uri;
@@ -64,7 +68,8 @@ public class MainActivity extends Activity {
     private int pickerMode;
     private final List<String> pickedPkgs = new ArrayList<>();
     private TextView sniffText, srcValue, unitValue, offsetValue, fontValue, bgInfo;
-    private Button notifyValue, alwaysOnValue;
+    private Button notifyValue, alwaysOnValue, styleValue;
+    private LinearLayout styleBox, styleGrid;
     private Button tabPreview, tabSetting, tabSniff;
     private View previewPage, settingPage, sniffPage;
 
@@ -197,6 +202,12 @@ public class MainActivity extends Activity {
         rootLayout.addView(pickerBox, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
+        // 表盘样式选择器，默认隐藏
+        styleBox = buildStyleBox();
+        styleBox.setVisibility(View.GONE);
+        rootLayout.addView(styleBox, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
         // 编辑界面（预览/设置/嗅探），桌面模式默认隐藏——按 Home 直接进表盘
         mainBox = buildMainBox();
         rootLayout.addView(mainBox, new FrameLayout.LayoutParams(
@@ -210,6 +221,10 @@ public class MainActivity extends Activity {
         mp.gravity = Gravity.TOP | Gravity.END;
         mp.setMargins(0, dp(4), dp(4), 0);
         menu.setOnClickListener(v -> {
+            if (styleBox.getVisibility() == View.VISIBLE) {
+                closeStyleBox();
+                return;
+            }
             if (pickerBox.getVisibility() == View.VISIBLE) {
                 closePicker();
                 return;
@@ -301,6 +316,12 @@ public class MainActivity extends Activity {
         LinearLayout st = new LinearLayout(this);
         st.setOrientation(LinearLayout.VERTICAL);
         st.setPadding(dp(8), dp(8), dp(8), 0);
+
+        st.addView(title("表盘样式（3 布局 × 4 配色）"));
+        styleValue = btn(styleLabel());
+        styleValue.setOnClickListener(v -> openStyleBox());
+        st.addView(styleValue, wide());
+        st.addView(hint("点开看 12 套缩略图，选中立即生效；背景图优先于样式底色"));
 
         st.addView(title("数据源"));
         srcValue = btn("AAPS");
@@ -424,6 +445,9 @@ public class MainActivity extends Activity {
         unitValue.setText(mmol ? "mmol/L" : "mg/dL");
         offsetValue.setText(String.format(java.util.Locale.US, "%.2f", p.getFloat("offset", 0f)));
         fontValue.setText(uiFontLabel());
+        if (styleValue != null) {
+            styleValue.setText(styleLabel());
+        }
         if (notifyValue != null) {
             notifyValue.setText(notifyLabel());
         }
@@ -453,7 +477,7 @@ public class MainActivity extends Activity {
         try {
             startActivity(new Intent(android.provider.Settings.ACTION_HOME_SETTINGS));
         } catch (Throwable t) {
-            Toast.makeText(this, "无主屏幕设置页：请按 Home 键，在弹出选择框中选「表盘」",
+            Toast.makeText(this, "无主屏幕设置页：请按 Home 键，在弹出选择框中选「控糖表盘」",
                     Toast.LENGTH_LONG).show();
         }
     }
@@ -503,9 +527,15 @@ public class MainActivity extends Activity {
             final Intent f = launch;
             TextView t = new TextView(this);
             t.setText(e[0]);
-            t.setTextColor(Color.rgb(180, 180, 180));
+            t.setTextColor(Color.rgb(210, 210, 210));
             t.setTextSize(13);
             t.setPadding(dp(12), dp(8), dp(12), dp(8));
+            // 半透明底衬，浅色表盘/背景图上也能看清
+            android.graphics.drawable.GradientDrawable chip =
+                    new android.graphics.drawable.GradientDrawable();
+            chip.setColor(Color.argb(110, 0, 0, 0));
+            chip.setCornerRadius(dp(12));
+            t.setBackground(chip);
             t.setOnClickListener(v -> {
                 try {
                     f.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
@@ -856,6 +886,118 @@ public class MainActivity extends Activity {
         pickerBox.setVisibility(View.GONE);
         mainBox.setVisibility(clockMode ? View.GONE : View.VISIBLE);
         dock.setVisibility(clockMode ? View.VISIBLE : View.GONE);
+    }
+
+    // ---------------- 表盘样式 ----------------
+
+    private String styleLabel() {
+        return "表盘样式：" + FaceStyle.current(p).name;
+    }
+
+    private LinearLayout buildStyleBox() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setBackgroundColor(Color.BLACK);
+        box.setPadding(dp(8), dp(44), dp(8), dp(8));
+        TextView t = new TextView(this);
+        t.setText("选择表盘样式");
+        t.setTextColor(Color.WHITE);
+        t.setTextSize(15 * uiFont());
+        t.setPadding(0, 0, 0, dp(6));
+        box.addView(t);
+        ScrollView sv = new ScrollView(this);
+        styleGrid = new LinearLayout(this);
+        styleGrid.setOrientation(LinearLayout.VERTICAL);
+        sv.addView(styleGrid);
+        box.addView(sv, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        Button back = btn("返回");
+        back.setOnClickListener(v -> closeStyleBox());
+        box.addView(back, wide());
+        return box;
+    }
+
+    private void openStyleBox() {
+        rebuildStyleGrid();
+        styleBox.setVisibility(View.VISIBLE);
+        mainBox.setVisibility(View.GONE);
+        dock.setVisibility(View.GONE);
+    }
+
+    private void closeStyleBox() {
+        styleBox.setVisibility(View.GONE);
+        mainBox.setVisibility(clockMode ? View.GONE : View.VISIBLE);
+        dock.setVisibility(clockMode ? View.VISIBLE : View.GONE);
+    }
+
+    /** 12 套样式两列网格，缩略图由 FaceDrawer 用同一渲染器绘制 */
+    private void rebuildStyleGrid() {
+        styleGrid.removeAllViews();
+        GridLayout grid = new GridLayout(this);
+        grid.setColumnCount(2);
+        for (FaceStyle st : FaceStyle.ALL) {
+            LinearLayout cell = new LinearLayout(this);
+            cell.setOrientation(LinearLayout.VERTICAL);
+            cell.setGravity(Gravity.CENTER_HORIZONTAL);
+            cell.setPadding(dp(2), dp(2), dp(2), dp(8));
+            cell.addView(new StylePreview(this, st),
+                    new LinearLayout.LayoutParams(dp(86), dp(105)));
+            TextView name = new TextView(this);
+            name.setText(st.name);
+            name.setTextSize(11 * uiFont());
+            name.setTextColor(st.id.equals(FaceStyle.current(p).id)
+                    ? Color.rgb(76, 175, 80) : Color.rgb(170, 170, 170));
+            name.setPadding(0, dp(4), 0, 0);
+            cell.addView(name);
+            cell.setOnClickListener(v -> applyStyle(st));
+            GridLayout.LayoutParams lp = new GridLayout.LayoutParams();
+            lp.width = 0;
+            lp.height = GridLayout.LayoutParams.WRAP_CONTENT;
+            lp.columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f);
+            grid.addView(cell, lp);
+        }
+        styleGrid.addView(grid);
+    }
+
+    private void applyStyle(FaceStyle s) {
+        p.edit().putString("wf_face_style", s.id).apply();
+        if (styleValue != null) {
+            styleValue.setText(styleLabel());
+        }
+        if (clockView != null) {
+            clockView.invalidate();
+        }
+        closeStyleBox();
+        Toast.makeText(this, "已应用 " + s.name, Toast.LENGTH_SHORT).show();
+    }
+
+    /** 样式缩略图：圆角裁切 + 选中描边 */
+    private class StylePreview extends View {
+        private final FaceStyle style;
+
+        StylePreview(Activity a, FaceStyle style) {
+            super(a);
+            this.style = style;
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            float r = dp(10);
+            Path clip = new Path();
+            clip.addRoundRect(new RectF(0, 0, getWidth(), getHeight()), r, r, Path.Direction.CW);
+            canvas.save();
+            canvas.clipPath(clip);
+            FaceDrawer.drawPreview(canvas, style);
+            canvas.restore();
+
+            Paint border = new Paint(Paint.ANTI_ALIAS_FLAG);
+            border.setStyle(Paint.Style.STROKE);
+            border.setStrokeWidth(dp(2));
+            border.setColor(style.id.equals(FaceStyle.current(p).id)
+                    ? Color.rgb(76, 175, 80) : Color.rgb(70, 70, 74));
+            canvas.drawRoundRect(new RectF(dp(1), dp(1), getWidth() - dp(1), getHeight() - dp(1)),
+                    r, r, border);
+        }
     }
 
     // ---------------- 背景图 ----------------

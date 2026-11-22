@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""生成表盘应用图标：自适应图标前景 PNG + 传统 mipmap。
+"""生成控糖表盘应用图标：自适应图标前景 PNG + 传统 mipmap。
 
-设计：深色底 + 白色表盘圆环 + 时针分针 + 3 点位置绿色血糖点。
+设计：深色底 + 白色圆环刻度 + 绿色血糖折线（末端圆点代表当前值）。
 运行：python3 tools/gen_icon.py
 """
 import os
+import math
 from PIL import Image, ImageDraw
 
 BG = (28, 28, 30)
@@ -18,39 +19,42 @@ SS = 4  # 超采样倍数
 
 def draw_face(size, scale=1.0):
     """在透明画布上画表盘，坐标以 108dp 为基准。"""
-    n = size * SS
+    return _draw_canvas(size * SS, scale).resize((size, size), Image.LANCZOS)
+
+
+def _draw_canvas(n, scale=1.0):
+    """直接按 n 像素画布绘制（调用方负责超采样）。"""
     img = Image.new("RGBA", (n, n), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     u = n / 108.0 * scale
     cx = cy = n / 2.0
 
     def pt(angle_deg, radius):
-        import math
         a = math.radians(angle_deg - 90)
         return (cx + radius * u * math.cos(a), cy + radius * u * math.sin(a))
 
-    # 表盘圆环
-    r, w = 27, 6.5
+    # 圆环
+    r = 30
     d.ellipse([cx - r * u, cy - r * u, cx + r * u, cy + r * u],
-              outline=FG, width=int(round(w * u)))
+              outline=FG, width=int(round(2.4 * u)))
 
-    # 时针（指向 4 点）与分针（指向 12 点）
-    def hand(angle, length):
-        x, y = pt(angle, length)
-        d.line([(cx, cy), (x, y)], fill=FG, width=int(round(5.5 * u)))
-        d.ellipse([x - 2.75 * u, y - 2.75 * u, x + 2.75 * u, y + 2.75 * u], fill=FG)
+    # 12/3/6/9 四个刻度
+    for angle in (0, 90, 180, 270):
+        x1, y1 = pt(angle, r)
+        x2, y2 = pt(angle, r - 5)
+        d.line([(x1, y1), (x2, y2)], fill=FG, width=int(round(2.4 * u)))
 
-    hand(120, 15)
-    hand(0, 20)
-
-    # 中心轴
-    d.ellipse([cx - 3.2 * u, cy - 3.2 * u, cx + 3.2 * u, cy + 3.2 * u], fill=FG)
-
-    # 3 点位置的绿色血糖点（压在圆环上）
-    x, y = pt(90, 27)
-    rad = 5.6 * u
-    d.ellipse([x - rad, y - rad, x + rad, y + rad], fill=ACCENT)
-    return img.resize((size, size), Image.LANCZOS)
+    # 绿色血糖折线（末端圆点 = 当前值）
+    pts = [(34, 62), (43, 54), (53, 59), (62, 48), (71, 54)]
+    line_pts = [(cx + (x - 54) * u, cy + (y - 54) * u) for x, y in pts]
+    width = max(1, int(round(5.2 * u)))
+    d.line(line_pts, fill=ACCENT, width=width)
+    for x, y in line_pts[:-1]:
+        rad = width / 2.0
+        d.ellipse([x - rad, y - rad, x + rad, y + rad], fill=ACCENT)
+    ex, ey = line_pts[-1]
+    d.ellipse([ex - 5 * u, ey - 5 * u, ex + 5 * u, ey + 5 * u], fill=ACCENT)
+    return img
 
 
 def rounded_mask(n, radius):
@@ -77,8 +81,9 @@ def full_bleed(size, round_mask):
     else:
         mask = rounded_mask(n, int(n * 0.18))
     bg.putalpha(mask)
-    face = draw_face(size, scale=0.84)
-    bg.alpha_composite(face.convert("RGBA"))
+    # 在超采样画布上直接绘制，避免小图贴到左上角
+    face = _draw_canvas(n, scale=0.84)
+    bg.alpha_composite(face)
     return bg.resize((size, size), Image.LANCZOS)
 
 
